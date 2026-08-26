@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openbio-comfy-mcp"
+description = "Live-canvas MCP bridge for ComfyUI and OpenBio."
+version = "0.1.0"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.comfy]
+DisplayName = "OpenBio Comfy MCP"
+requires-comfyui = ">=0.33.0"
+web = "web"
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = ["tests"]
+pythonpath = [".", "../ComfyUI"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.setuptools.packages.find]
+include = ["openbio_comfy_mcp*"]

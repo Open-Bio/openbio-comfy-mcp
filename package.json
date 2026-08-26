@@ -1,0 +1,19 @@
+{
+  "name": "openbio-comfy-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "openbio-comfy-mcp": "./mcp_host/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "test:mcp": "node --test tests/mcp_host.test.mjs tests/search_nodes.test.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
