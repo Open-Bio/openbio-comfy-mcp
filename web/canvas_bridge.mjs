@@ -136,6 +136,27 @@ function updateGroup(group, operation) {
   if (Object.hasOwn(operation, "bounding")) group.recomputeInsideNodes();
 }
 
+function assertGroupMovable(group, pinned = group.pinned, reference = group.id) {
+  if (pinned) {
+    throw bridgeError("movement_rejected", `Pinned group cannot be moved: ${reference}`, {
+      group_id: String(reference),
+    });
+  }
+}
+
+function draggedGroupItems(group) {
+  // Match LGraphCanvas drag semantics: flatten and deduplicate descendants,
+  // then move every item with child recursion disabled.
+  const items = new Set();
+  const addItem = (item) => {
+    if (items.has(item) || item.pinned) return;
+    items.add(item);
+    for (const child of item.children ?? []) addItem(child);
+  };
+  addItem(group);
+  return items;
+}
+
 function plannedNode(context, reference) {
   const node = Object.hasOwn(context.preparedNodes, reference)
     ? context.preparedNodes[reference]
@@ -194,7 +215,9 @@ const OPERATION_HANDLERS = new Map([
   ["add_group", {
     preflight(context, operation) {
       assertUniqueTempRef(context, operation.temp_ref);
-      context.preparedGroups[operation.temp_ref] = new context.LiteGraph.LGraphGroup(operation.title);
+      const group = new context.LiteGraph.LGraphGroup(operation.title);
+      context.preparedGroups[operation.temp_ref] = group;
+      context.plannedGroupPinned.set(group, operation.pinned ?? group.pinned);
     },
     apply(context, operation) {
       const group = context.preparedGroups[operation.temp_ref];
@@ -217,12 +240,43 @@ const OPERATION_HANDLERS = new Map([
   }],
   ["update_group", {
     preflight(context, operation) {
-      plannedGroup(context, operation.group_id);
+      const group = plannedGroup(context, operation.group_id);
+      if (Object.hasOwn(operation, "pinned")) {
+        context.plannedGroupPinned.set(group, operation.pinned);
+      }
     },
     apply(context, operation) {
       const group = resolveGroup(context.graph, operation.group_id, context.groupIdMap);
       updateGroup(group, operation);
       context.changedGroupIds.add(String(group.id));
+    },
+  }],
+  ["move_group", {
+    preflight(context, operation) {
+      const group = plannedGroup(context, operation.group_id);
+      const pinned = context.plannedGroupPinned.has(group)
+        ? context.plannedGroupPinned.get(group)
+        : group.pinned;
+      assertGroupMovable(group, pinned, operation.group_id);
+    },
+    apply(context, operation) {
+      const group = resolveGroup(context.graph, operation.group_id, context.groupIdMap);
+      assertGroupMovable(group);
+      group.recomputeInsideNodes();
+      const items = draggedGroupItems(group);
+      const [deltaX, deltaY] = operation.delta;
+      if (context.LiteGraph.vueNodesMode) {
+        context.canvas.moveChildNodesInGroupVueMode(items, deltaX, deltaY);
+      } else {
+        for (const item of items) item.move(deltaX, deltaY, true);
+      }
+      for (const item of items) {
+        if (context.graph.getNodeById(item.id) === item) {
+          context.changedNodeIds.add(String(item.id));
+        } else if (context.graph.groups?.includes(item)) {
+          context.changedGroupIds.add(String(item.id));
+        }
+      }
     },
   }],
   ["remove_group", {
@@ -346,6 +400,7 @@ function preflightOperations(graph, LiteGraph, operations) {
     preparedGroups: {},
     removedNodes: new Set(),
     removedGroups: new Set(),
+    plannedGroupPinned: new Map(),
   };
   const plan = [];
   for (const operation of operations) {
@@ -360,10 +415,11 @@ function preflightOperations(graph, LiteGraph, operations) {
   };
 }
 
-function applyOperations(canvas, graph, plan, preparedNodes, preparedGroups) {
+function applyOperations(canvas, graph, LiteGraph, plan, preparedNodes, preparedGroups) {
   const context = {
     canvas,
     graph,
+    LiteGraph,
     preparedNodes,
     preparedGroups,
     idMap: {},
@@ -393,6 +449,64 @@ function canonicalSelection(canvas, graph) {
     items.push({ kind, id: String(item.id) });
   }
   return items.sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
+}
+
+function canonicalViewport(canvas) {
+  return {
+    scale: canvas.ds.state.scale,
+    offset: Array.from(canvas.ds.state.offset),
+    visible_area: Array.from(canvas.ds.visible_area),
+  };
+}
+
+const FIT_VIEW_ANIMATION_MS = 350;
+const FIT_VIEW_TIMEOUT_MS = FIT_VIEW_ANIMATION_MS + 250;
+
+function fitViewBounds(canvas) {
+  const items = canvas.selectedItems?.size
+    ? canvas.selectedItems
+    : canvas.positionableItems;
+  const bounds = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const item of items) {
+    const rect = item.boundingRect;
+    bounds[0] = Math.min(bounds[0], rect[0]);
+    bounds[1] = Math.min(bounds[1], rect[1]);
+    bounds[2] = Math.max(bounds[2], rect[0] + rect[2]);
+    bounds[3] = Math.max(bounds[3], rect[1] + rect[3]);
+  }
+  if (!bounds.every(Number.isFinite)) return null;
+  return [
+    bounds[0] - 10,
+    bounds[1] - 10,
+    bounds[2] - bounds[0] + 20,
+    bounds[3] - bounds[1] + 20,
+  ];
+}
+
+function waitForFitViewAnimation() {
+  if (typeof globalThis.requestAnimationFrame !== "function") return Promise.resolve(false);
+  const startedAt = globalThis.performance.now();
+  return new Promise((resolve) => {
+    let settled = false;
+    let animationFinished = false;
+    const finish = (completed) => {
+      if (settled) return;
+      settled = true;
+      globalThis.clearTimeout(timeoutId);
+      resolve(completed);
+    };
+    const waitForFrame = (timestamp) => {
+      if (settled) return;
+      if (animationFinished) {
+        finish(true);
+      } else {
+        animationFinished = timestamp - startedAt >= FIT_VIEW_ANIMATION_MS;
+        globalThis.requestAnimationFrame(waitForFrame);
+      }
+    };
+    const timeoutId = globalThis.setTimeout(() => finish(false), FIT_VIEW_TIMEOUT_MS);
+    globalThis.requestAnimationFrame(waitForFrame);
+  });
 }
 
 function compactNode(node) {
@@ -513,11 +627,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         canvas_id: identity.canvas_id,
         revision: revisionOf(snapshot),
         selection: canonicalSelection(canvas, graph),
-        viewport: {
-          scale: canvas.ds.state.scale,
-          offset: Array.from(canvas.ds.state.offset),
-          visible_area: Array.from(canvas.ds.visible_area),
-        },
+        viewport: canonicalViewport(canvas),
       };
       const links = (snapshot.links ?? []).map((link) => compactLink(graph, link));
       if (refs !== undefined) {
@@ -546,6 +656,84 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         nodes: graph.nodes.map(compactNode),
         links,
         groups: (snapshot.groups ?? []).map(compactGroup),
+      };
+    },
+
+    async presentCanvas(presentation) {
+      if (
+        app.canvas !== canvas
+        || canvas.graph !== graph
+        || app.extensionManager.workflow.activeWorkflow !== workflow
+      ) {
+        throw bridgeError("canvas_changed", "The active ComfyUI canvas changed; inspect it again");
+      }
+      if (presentation?.canvas_id !== identity.canvas_id) {
+        throw bridgeError("canvas_mismatch", "The presentation targets a different ComfyUI canvas", {
+          expected: identity.canvas_id,
+          received: presentation?.canvas_id,
+        });
+      }
+      if (!Array.isArray(presentation.refs)) {
+        throw bridgeError("invalid_presentation", "Canvas presentation refs must be an array");
+      }
+      if (presentation.selection !== "replace" && presentation.selection !== "add") {
+        throw bridgeError(
+          "invalid_presentation",
+          "Canvas presentation selection must be replace or add",
+        );
+      }
+      if (typeof presentation.fit_view !== "boolean") {
+        throw bridgeError("invalid_presentation", "Canvas presentation fit_view must be a boolean");
+      }
+
+      const items = presentation.refs.map((reference, index) => {
+        if (reference?.kind === "group") return resolveGroup(graph, reference.id, {});
+        if (reference?.kind === "node") return resolveNode(graph, reference.id, {});
+        throw bridgeError("invalid_presentation", "Canvas presentation refs must target nodes or groups", {
+          reference_index: index,
+        });
+      });
+
+      const groups = graph.groups ?? [];
+      const groupOrder = items.some((item) => groups.includes(item))
+        ? new Map(groups.map((group, index) => [group, index]))
+        : null;
+      try {
+        if (presentation.selection === "replace") canvas.deselectAll();
+        if (items.length > 0) canvas.selectItems(items, true);
+      } finally {
+        if (
+          groupOrder !== null
+          && groups.some((group, index) => groupOrder.get(group) !== index)
+        ) {
+          groups.sort(
+            (left, right) => (groupOrder.get(left) ?? groupOrder.size)
+              - (groupOrder.get(right) ?? groupOrder.size),
+          );
+        }
+      }
+      if (presentation.fit_view) {
+        const bounds = fitViewBounds(canvas);
+        canvas.fitViewToSelectionAnimated({ duration: FIT_VIEW_ANIMATION_MS });
+        const animationCompleted = await waitForFitViewAnimation();
+        if (!animationCompleted && bounds !== null) {
+          canvas.ds.fitToBounds(bounds);
+          canvas.setDirty(true, true);
+        }
+        canvas.ds.computeVisibleArea(canvas.viewport);
+      }
+      if (
+        app.canvas !== canvas
+        || canvas.graph !== graph
+        || app.extensionManager.workflow.activeWorkflow !== workflow
+      ) {
+        throw bridgeError("canvas_changed", "The active ComfyUI canvas changed; inspect it again");
+      }
+
+      return {
+        canvas_id: identity.canvas_id,
+        selection: canonicalSelection(canvas, graph),
+        viewport: canonicalViewport(canvas),
       };
     },
 
@@ -678,6 +866,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         applied = applyOperations(
           canvas,
           graph,
+          LiteGraph,
           plan,
           preparedNodes,
           preparedGroups,

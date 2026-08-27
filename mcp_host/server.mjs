@@ -130,6 +130,16 @@ const PATCH_OPERATION_SCHEMA = {
     {
       type: "object",
       properties: {
+        op: { const: "move_group" },
+        group_id: NODE_REFERENCE_SCHEMA,
+        delta: POSITION_SCHEMA,
+      },
+      required: ["op", "group_id", "delta"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
         op: { const: "remove_group" },
         group_id: NODE_REFERENCE_SCHEMA,
       },
@@ -173,6 +183,30 @@ const TOOL_DEFINITIONS = [
       additionalProperties: false,
     },
     annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: "present_canvas",
+    description: "Select and optionally fit native items on a live ComfyUI canvas without modifying the workflow.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        canvas_id: { type: "string" },
+        refs: {
+          type: "array",
+          items: CANVAS_REFERENCE_SCHEMA,
+        },
+        selection: { type: "string", enum: ["replace", "add"] },
+        fit_view: { type: "boolean" },
+      },
+      required: ["canvas_id", "refs", "selection", "fit_view"],
+      additionalProperties: false,
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    },
   },
   {
     name: "search_nodes",
@@ -277,7 +311,7 @@ export function createMcpServer({
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to change only the live selection or viewport. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
     },
   );
 
@@ -289,6 +323,9 @@ export function createMcpServer({
     const { name, arguments: arguments_ = {} } = request.params;
     try {
       if (name === "inspect_canvas") {
+        return await relayCommand(name, arguments_, { baseUrl, fetchImpl });
+      }
+      if (name === "present_canvas") {
         return await relayCommand(name, arguments_, { baseUrl, fetchImpl });
       }
       if (name === "search_nodes") {

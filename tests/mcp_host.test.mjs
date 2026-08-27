@@ -81,7 +81,7 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
   const listed = await client.listTools();
   assert.deepEqual(
     listed.tools.map(({ name }) => name),
-    ["inspect_canvas", "search_nodes", "apply_canvas_patch"],
+    ["inspect_canvas", "present_canvas", "search_nodes", "apply_canvas_patch"],
   );
   const inspectTool = listed.tools.find(({ name }) => name === "inspect_canvas");
   assert.deepEqual(inspectTool.inputSchema.properties.refs, {
@@ -95,6 +95,35 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
       required: ["kind", "id"],
       additionalProperties: false,
     },
+  });
+  const presentTool = listed.tools.find(({ name }) => name === "present_canvas");
+  assert.deepEqual(presentTool.inputSchema, {
+    type: "object",
+    properties: {
+      canvas_id: { type: "string" },
+      refs: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            kind: { type: "string", enum: ["node", "group"] },
+            id: { type: ["string", "integer"] },
+          },
+          required: ["kind", "id"],
+          additionalProperties: false,
+        },
+      },
+      selection: { type: "string", enum: ["replace", "add"] },
+      fit_view: { type: "boolean" },
+    },
+    required: ["canvas_id", "refs", "selection", "fit_view"],
+    additionalProperties: false,
+  });
+  assert.deepEqual(presentTool.annotations, {
+    readOnlyHint: false,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: false,
   });
 
   const result = await client.callTool({
@@ -114,6 +143,56 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
       canvas_id: "canvas-7",
       refs: [{ kind: "node", id: "31" }],
     },
+  });
+});
+
+test("present_canvas sends presentation state to the selected live canvas", async (t) => {
+  let received;
+  const comfy = await startFakeComfy(async (request, response) => {
+    received = await readJson(request);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      ok: true,
+      result: {
+        canvas_id: "canvas-7",
+        selection: [
+          { kind: "node", id: "31" },
+          { kind: "group", id: "6" },
+        ],
+        viewport: { offset: [120, 80], scale: 0.75 },
+      },
+    }));
+  });
+  t.after(() => comfy.close());
+  const client = await connectInMemory(t, comfy.url);
+  const arguments_ = {
+    canvas_id: "canvas-7",
+    refs: [
+      { kind: "node", id: "31" },
+      { kind: "group", id: "6" },
+    ],
+    selection: "replace",
+    fit_view: true,
+  };
+
+  const result = await client.callTool({
+    name: "present_canvas",
+    arguments: arguments_,
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent, {
+    canvas_id: "canvas-7",
+    selection: [
+      { kind: "node", id: "31" },
+      { kind: "group", id: "6" },
+    ],
+    viewport: { offset: [120, 80], scale: 0.75 },
+  });
+  assert.deepEqual(received, {
+    canvas_id: "canvas-7",
+    command: "present_canvas",
+    arguments: arguments_,
   });
 });
 
@@ -140,6 +219,10 @@ test("apply_canvas_patch sends one ordered patch to the selected live canvas", a
     temp_ref: "inputs",
     title: "Inputs",
     bounding: [80, 160, 380, 240],
+  }, {
+    op: "move_group",
+    group_id: "inputs",
+    delta: [-8060, 2000],
   }];
 
   const result = await client.callTool({
@@ -316,6 +399,12 @@ test("tools/list advertises the exact supported GraphPatch operations", async (t
         op: "update_group",
         fields: ["op", "group_id", "title", "bounding", "color", "pinned"],
         required: ["op", "group_id"],
+        additionalProperties: false,
+      },
+      {
+        op: "move_group",
+        fields: ["op", "group_id", "delta"],
+        required: ["op", "group_id", "delta"],
         additionalProperties: false,
       },
       {

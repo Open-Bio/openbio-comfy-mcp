@@ -239,6 +239,43 @@ test("apply_canvas_patch uses the relay-selected canvas identity", async () => {
   assert.equal(fixture.graph.getNodeById(reply.result.id_map.summary).type, "OpenBioSummary");
 });
 
+test("present_canvas returns the live selection using the relay-selected canvas identity", async () => {
+  const fixture = createWebFixture();
+  await fixture.extension.setup();
+  fixture.requests.length = 0;
+
+  await fixture.customListeners.get(COMMAND_EVENT)({
+    detail: {
+      request_id: "request-present",
+      page_id: "page-a",
+      workflow_id: "workflow-123",
+      canvas_id: "page-a:workflow-123:canvas-root",
+      command: "present_canvas",
+      arguments: {
+        canvas_id: "arguments-must-not-select-the-canvas",
+        refs: [{ kind: "node", id: "7" }],
+        selection: "replace",
+        fit_view: false,
+      },
+    },
+  });
+
+  assert.deepEqual(fixture.requests.at(-1).body, {
+    page_id: "page-a",
+    request_id: "request-present",
+    ok: true,
+    result: {
+      canvas_id: "page-a:workflow-123:canvas-root",
+      selection: [{ kind: "node", id: "7" }],
+      viewport: {
+        scale: 1.25,
+        offset: [12, 24],
+        visible_area: [10, 20, 900, 700],
+      },
+    },
+  });
+});
+
 test("concurrent canvas commands remain separate native transactions", async () => {
   const fixture = createWebFixture();
   await fixture.extension.setup();
@@ -283,4 +320,70 @@ test("concurrent canvas commands remain separate native transactions", async () 
       "canvas.emitAfterChange",
     ],
   );
+});
+
+test("a queued present_canvas starts after the preceding patch transaction closes", async () => {
+  const fixture = createWebFixture();
+  await fixture.extension.setup();
+  fixture.requests.length = 0;
+  fixture.calls.length = 0;
+  const revision = createLiveCanvas(fixture.app, fixture.LiteGraph, { pageId: "page-a" })
+    .inspectCanvas().revision;
+  const presentTargetId = String(fixture.graph.lastNodeId + 1);
+  const commandListener = fixture.customListeners.get(COMMAND_EVENT);
+  const deselectAll = fixture.canvas.deselectAll.bind(fixture.canvas);
+  fixture.canvas.deselectAll = (...args) => {
+    fixture.calls.push("present.selection-start");
+    return deselectAll(...args);
+  };
+
+  await Promise.all([
+    commandListener({
+      detail: {
+        request_id: "request-patch-before-present",
+        page_id: "page-a",
+        workflow_id: "workflow-123",
+        canvas_id: "page-a:workflow-123:canvas-root",
+        command: "apply_canvas_patch",
+        arguments: {
+          base_revision: revision,
+          operations: [{
+            op: "add_node",
+            temp_ref: "present-target",
+            class_type: "OpenBioSummary",
+            pos: [200, 300],
+          }],
+        },
+      },
+    }),
+    commandListener({
+      detail: {
+        request_id: "request-present-after-patch",
+        page_id: "page-a",
+        workflow_id: "workflow-123",
+        canvas_id: "page-a:workflow-123:canvas-root",
+        command: "present_canvas",
+        arguments: {
+          refs: [{ kind: "node", id: presentTargetId }],
+          selection: "replace",
+          fit_view: false,
+        },
+      },
+    }),
+  ]);
+
+  const selectionIndex = fixture.calls.indexOf("present.selection-start");
+  const graphAfterChangeIndex = fixture.calls.indexOf("graph.afterChange");
+  const canvasAfterChangeIndex = fixture.calls.indexOf("canvas.emitAfterChange");
+  assert.notEqual(selectionIndex, -1);
+  assert.notEqual(graphAfterChangeIndex, -1);
+  assert.notEqual(canvasAfterChangeIndex, -1);
+  assert.ok(selectionIndex > graphAfterChangeIndex);
+  assert.ok(selectionIndex > canvasAfterChangeIndex);
+  const replies = fixture.requests
+    .filter(({ path }) => path === REPLY_PATH)
+    .map(({ body }) => body);
+  assert.equal(replies.length, 2);
+  assert.equal(replies.every(({ ok }) => ok), true);
+  assert.deepEqual(replies[1].result.selection, [{ kind: "node", id: presentTargetId }]);
 });

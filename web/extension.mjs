@@ -105,6 +105,11 @@ export function createLiveCanvasWebExtension({
           ...message.arguments,
           canvas_id: message.canvas_id,
         });
+      } else if (message.command === "present_canvas") {
+        result = await liveCanvas.presentCanvas({
+          ...message.arguments,
+          canvas_id: message.canvas_id,
+        });
       } else {
         throw new CanvasBridgeError(
           "unsupported_command",

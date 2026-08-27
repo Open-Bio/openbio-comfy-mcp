@@ -165,6 +165,180 @@ test("legacy reroute changes invalidate the canvas revision", () => {
   assert.notEqual(liveCanvas.inspectCanvas().revision, before);
 });
 
+test("present_canvas replaces, adds, clears, and fits the live selection without changing the workflow", async (t) => {
+  const { app, canvas, graph, LiteGraph, calls, TestGroup } = createCanvasFixture();
+  const childGroup = new TestGroup("Child");
+  childGroup._bounding = [40, 70, 220, 140];
+  graph.add(childGroup);
+  const group = new TestGroup("Presented");
+  group._bounding = [20, 30, 400, 260];
+  graph.add(group);
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+  const snapshot = graph.serialize();
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  t.after(() => {
+    if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+  });
+  const frameCallbacks = [];
+  globalThis.requestAnimationFrame = (callback) => {
+    frameCallbacks.push(callback);
+    return frameCallbacks.length;
+  };
+  canvas.fitViewToSelectionAnimated = ({ duration }) => {
+    calls.push("canvas.fitViewToSelectionAnimated");
+    const startedAt = globalThis.performance.now();
+    const animate = (timestamp) => {
+      if (timestamp - startedAt < duration) {
+        globalThis.requestAnimationFrame(animate);
+        return;
+      }
+      canvas.ds.state.scale = 0.75;
+      canvas.ds.state.offset = [100, 60];
+      globalThis.requestAnimationFrame(() => {
+        canvas.ds.visible_area = new Float64Array([20, 30, 400, 260]);
+      });
+    };
+    globalThis.requestAnimationFrame(animate);
+  };
+  canvas.ds.computeVisibleArea = () => { calls.push("canvas.ds.computeVisibleArea"); };
+
+  const frameStart = globalThis.performance.now();
+  const replacedPromise = liveCanvas.presentCanvas({
+    canvas_id: inspected.canvas_id,
+    refs: [{ kind: "group", id: group.id }],
+    selection: "replace",
+    fit_view: true,
+  });
+  for (const elapsed of [0, 200, 400, 600]) {
+    const callbacks = frameCallbacks.splice(0);
+    for (const callback of callbacks) callback(frameStart + elapsed);
+    await Promise.resolve();
+  }
+  const replaced = await replacedPromise;
+  const added = await liveCanvas.presentCanvas({
+    canvas_id: inspected.canvas_id,
+    refs: [{ kind: "node", id: "7" }],
+    selection: "add",
+    fit_view: false,
+  });
+  const cleared = await liveCanvas.presentCanvas({
+    canvas_id: inspected.canvas_id,
+    refs: [],
+    selection: "replace",
+    fit_view: false,
+  });
+
+  assert.deepEqual(replaced, {
+    canvas_id: inspected.canvas_id,
+    selection: [{ kind: "group", id: String(group.id) }],
+    viewport: {
+      scale: 0.75,
+      offset: [100, 60],
+      visible_area: [20, 30, 400, 260],
+    },
+  });
+  assert.deepEqual(added.selection, [
+    { kind: "group", id: String(group.id) },
+    { kind: "node", id: "7" },
+  ]);
+  assert.deepEqual(cleared.selection, []);
+  assert.deepEqual(graph.serialize(), snapshot);
+  assert.equal(liveCanvas.inspectCanvas().revision, inspected.revision);
+  assert.equal(calls.includes("canvas.fitViewToSelectionAnimated"), true);
+  assert.deepEqual(
+    calls.filter((call) => typeof call === "string" && call.includes("Change")),
+    [],
+  );
+  assert.equal(calls.includes("graph.setDirtyCanvas"), false);
+});
+
+test("present_canvas resolves every ref before replacing the current selection", async () => {
+  const { app, canvas, existing, graph, LiteGraph, calls, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Valid");
+  graph.add(group);
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+  calls.length = 0;
+
+  await assert.rejects(
+    liveCanvas.presentCanvas({
+      canvas_id: inspected.canvas_id,
+      refs: [
+        { kind: "group", id: group.id },
+        { kind: "node", id: "missing" },
+      ],
+      selection: "replace",
+      fit_view: true,
+    }),
+    (error) => error.code === "node_not_found",
+  );
+
+  assert.deepEqual([...canvas.selectedItems], [existing]);
+  assert.deepEqual(calls, []);
+});
+
+test("present_canvas completes fitting when animation frames are unavailable", async (t) => {
+  const { app, canvas, LiteGraph, calls } = createCanvasFixture();
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  t.after(() => {
+    if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+  });
+  delete globalThis.requestAnimationFrame;
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const presented = await liveCanvas.presentCanvas({
+    canvas_id: inspected.canvas_id,
+    refs: [{ kind: "node", id: "7" }],
+    selection: "replace",
+    fit_view: true,
+  });
+
+  assert.deepEqual(presented.viewport.offset, [-30, -70]);
+  assert.equal(presented.viewport.scale, 0.75);
+  assert.equal(
+    calls.some((call) => Array.isArray(call) && call[0] === "canvas.ds.fitToBounds"),
+    true,
+  );
+  assert.equal(calls.includes("canvas.ds.computeVisibleArea"), true);
+  assert.equal(canvas.selectedItems.size, 1);
+});
+
+test("present_canvas rejects a canvas switch while waiting for the fit animation", async (t) => {
+  const { app, graph, LiteGraph } = createCanvasFixture();
+  const originalRequestAnimationFrame = globalThis.requestAnimationFrame;
+  t.after(() => {
+    if (originalRequestAnimationFrame === undefined) delete globalThis.requestAnimationFrame;
+    else globalThis.requestAnimationFrame = originalRequestAnimationFrame;
+  });
+  const frameCallbacks = [];
+  globalThis.requestAnimationFrame = (callback) => {
+    frameCallbacks.push(callback);
+    return frameCallbacks.length;
+  };
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+  const presentation = liveCanvas.presentCanvas({
+    canvas_id: inspected.canvas_id,
+    refs: [{ kind: "node", id: "7" }],
+    selection: "replace",
+    fit_view: true,
+  });
+  app.canvas = { graph };
+
+  const frameStart = globalThis.performance.now();
+  for (const elapsed of [0, 400, 600]) {
+    const callbacks = frameCallbacks.splice(0);
+    for (const callback of callbacks) callback(frameStart + elapsed);
+    await Promise.resolve();
+  }
+
+  await assert.rejects(presentation, (error) => error.code === "canvas_changed");
+});
+
 test("apply_canvas_patch edits the live graph in one native transaction", async () => {
   const { app, graph, LiteGraph, calls } = createCanvasFixture();
   const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
@@ -277,6 +451,136 @@ test("fit_group_to_nodes fits moved and newly added nodes without moving them", 
   assert.deepEqual(group._bounding, [80, 50, 420, 250]);
 });
 
+test("move_group moves a fitted group and its contents in the same native transaction", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [
+      { op: "add_node", temp_ref: "summary", class_type: "OpenBioSummary", pos: [300, 200] },
+      { op: "add_group", temp_ref: "analysis", title: "Analysis" },
+      {
+        op: "fit_group_to_nodes",
+        group_id: "analysis",
+        node_ids: ["7", "summary"],
+        padding: 20,
+      },
+      { op: "move_group", group_id: "analysis", delta: [50, -20] },
+    ],
+  });
+
+  const group = graph.groups.find(({ id }) => String(id) === applied.group_id_map.analysis);
+  assert.deepEqual(group._bounding, [70, 10, 480, 270]);
+  assert.deepEqual(graph.getNodeById(7).pos, [90, 60]);
+  assert.deepEqual(graph.getNodeById(applied.id_map.summary).pos, [350, 180]);
+  assert.deepEqual(applied.changed_node_ids, ["7", applied.id_map.summary].sort());
+  assert.deepEqual(applied.changed_group_ids, [String(group.id)]);
+  assert.notEqual(applied.revision, inspected.revision);
+  assert.equal(applied.undoable, true);
+  assert.deepEqual(
+    calls.filter((call) => typeof call === "string" && call.includes("Change")),
+    [
+      "canvas.emitBeforeChange",
+      "graph.beforeChange",
+      "graph.afterChange",
+      "canvas.emitAfterChange",
+    ],
+  );
+  const finalRecomputeIndex = calls.findLastIndex(
+    (call) => Array.isArray(call) && call[0] === "group.recomputeInsideNodes",
+  );
+  const firstMoveIndex = calls.findIndex(
+    (call) => Array.isArray(call) && ["group.move", "node.move"].includes(call[0]),
+  );
+  assert.ok(finalRecomputeIndex < firstMoveIndex);
+});
+
+test("move_group rejects a pinned group during preflight without changing the graph", async () => {
+  const { app, graph, LiteGraph, calls, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Pinned");
+  group._bounding = [0, 0, 400, 300];
+  group.pin(true);
+  graph.add(group);
+  const snapshot = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    liveCanvas.applyCanvasPatch({
+      canvas_id: inspected.canvas_id,
+      base_revision: inspected.revision,
+      operations: [
+        { op: "move_node", node_id: "7", pos: [500, 500] },
+        { op: "move_group", group_id: group.id, delta: [50, 20] },
+      ],
+    }),
+    (error) => error.code === "movement_rejected" && error.details.group_id === String(group.id),
+  );
+
+  assert.deepEqual(graph.serialize(), snapshot);
+  assert.deepEqual(calls, []);
+});
+
+test("move_group follows earlier pin changes in the same ordered patch", async () => {
+  const { app, graph, LiteGraph, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Pinned");
+  group._bounding = [0, 0, 400, 300];
+  group.pin(true);
+  graph.add(group);
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [
+      { op: "update_group", group_id: group.id, pinned: false },
+      { op: "move_group", group_id: group.id, delta: [25, 15] },
+    ],
+  });
+
+  assert.deepEqual(group._bounding, [25, 15, 400, 300]);
+  assert.deepEqual(graph.getNodeById(7).pos, [65, 95]);
+  assert.deepEqual(applied.changed_group_ids, [String(group.id)]);
+  assert.deepEqual(applied.changed_node_ids, ["7"]);
+});
+
+test("move_group uses the native Vue movement path and moves nested contents once", async () => {
+  const { app, graph, LiteGraph, calls, TestGroup } = createCanvasFixture();
+  const inner = new TestGroup("Inner");
+  inner._bounding = [20, 40, 260, 180];
+  graph.add(inner);
+  const outer = new TestGroup("Outer");
+  outer._bounding = [0, 0, 400, 300];
+  graph.add(outer);
+  LiteGraph.vueNodesMode = true;
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [{ op: "move_group", group_id: outer.id, delta: [30, 10] }],
+  });
+
+  assert.deepEqual(outer._bounding, [30, 10, 400, 300]);
+  assert.deepEqual(inner._bounding, [50, 50, 260, 180]);
+  assert.deepEqual(graph.getNodeById(7).pos, [70, 90]);
+  assert.deepEqual(applied.changed_group_ids, [String(inner.id), String(outer.id)].sort());
+  assert.deepEqual(applied.changed_node_ids, ["7"]);
+  assert.equal(
+    calls.filter((call) => Array.isArray(call) && call[0] === "canvas.moveChildNodesInGroupVueMode").length,
+    1,
+  );
+  assert.equal(
+    calls.filter((call) => Array.isArray(call) && call[0] === "node.setPos").length,
+    1,
+  );
+});
+
 test("remove_group removes only the group and keeps its nodes", async () => {
   const { app, graph, LiteGraph, TestGroup } = createCanvasFixture();
   const group = new TestGroup("Temporary");
@@ -299,6 +603,7 @@ test("remove_group removes only the group and keeps its nodes", async () => {
 test("invalid group references are rejected before the live graph changes", async () => {
   for (const operation of [
     { op: "update_group", group_id: "missing", title: "Nope" },
+    { op: "move_group", group_id: "missing", delta: [10, 20] },
     {
       op: "fit_group_to_nodes",
       group_id: "missing",

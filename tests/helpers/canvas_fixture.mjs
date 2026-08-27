@@ -28,6 +28,18 @@ export function createCanvasFixture() {
       return [this.pos[0], this.pos[1], this.size[0], this.size[1]];
     }
 
+    move(deltaX, deltaY, skipChildren = false) {
+      calls.push(["node.move", this.id, deltaX, deltaY, skipChildren]);
+      this.pos[0] += deltaX;
+      this.pos[1] += deltaY;
+    }
+
+    setPos(x, y) {
+      calls.push(["node.setPos", this.id, x, y]);
+      this.pos[0] = x;
+      this.pos[1] = y;
+    }
+
     connect(output, target, input) {
       const outputIndex = typeof output === "string" ? this.outputs.findIndex((slot) => slot.name === output) : output;
       const inputIndex = typeof input === "string" ? target.inputs.findIndex((slot) => slot.name === input) : input;
@@ -61,6 +73,8 @@ export function createCanvasFixture() {
       this.color = "#AAA";
       this.flags = {};
       this._bounding = [10, 10, 140, 80];
+      this._nodes = [];
+      this._children = new Set();
       this.graph = undefined;
     }
 
@@ -84,6 +98,18 @@ export function createCanvasFixture() {
 
     get boundingRect() {
       return this._bounding;
+    }
+
+    get nodes() {
+      return this._nodes;
+    }
+
+    get children() {
+      return this._children;
+    }
+
+    get pinned() {
+      return Boolean(this.flags.pinned);
     }
 
     serialize() {
@@ -119,8 +145,52 @@ export function createCanvasFixture() {
       this._bounding = [left, top - 30, right - left, bottom - top + 30];
     }
 
-    recomputeInsideNodes() {
+    recomputeInsideNodes(maxDepth = 100, visited = new Set()) {
       calls.push(["group.recomputeInsideNodes", this.id]);
+      if (maxDepth <= 0 || visited.has(this.id)) return;
+      visited.add(this.id);
+      this._nodes.length = 0;
+      this._children.clear();
+      if (!this.graph) return;
+      const [left, top, width, height] = this._bounding;
+      const containsCenter = (rect) => {
+        const centerX = rect[0] + rect[2] * 0.5;
+        const centerY = rect[1] + rect[3] * 0.5;
+        return centerX >= left
+          && centerX < left + width
+          && centerY >= top
+          && centerY < top + height;
+      };
+      const containsRect = (rect) => (
+        rect[0] >= left
+        && rect[1] >= top
+        && rect[0] + rect[2] <= left + width
+        && rect[1] + rect[3] <= top + height
+      );
+      for (const node of this.graph.nodes) {
+        if (!containsCenter(node.boundingRect)) continue;
+        this._nodes.push(node);
+        this._children.add(node);
+      }
+      const containedGroups = this.graph.groups.filter(
+        (group) => group !== this && containsRect(group.boundingRect),
+      );
+      for (const group of containedGroups) this._children.add(group);
+      for (const group of containedGroups) group.recomputeInsideNodes(maxDepth - 1, visited);
+      this.graph.groups.sort((leftGroup, rightGroup) => {
+        if (leftGroup === this) return this._children.has(rightGroup) ? -1 : 0;
+        if (rightGroup === this) return this._children.has(leftGroup) ? 1 : 0;
+        return 0;
+      });
+    }
+
+    move(deltaX, deltaY, skipChildren = false) {
+      calls.push(["group.move", this.id, deltaX, deltaY, skipChildren]);
+      if (this.pinned) return;
+      this._bounding[0] += deltaX;
+      this._bounding[1] += deltaY;
+      if (skipChildren) return;
+      for (const child of this._children) child.move(deltaX, deltaY);
     }
   }
 
@@ -227,9 +297,50 @@ export function createCanvasFixture() {
     ds: {
       state: { scale: 1.25, offset: [12, 24] },
       visible_area: new Float64Array([10, 20, 900, 700]),
+      fitToBounds(bounds) {
+        calls.push(["canvas.ds.fitToBounds", Array.from(bounds)]);
+        this.state.scale = 0.75;
+        this.state.offset = [-bounds[0], -bounds[1]];
+      },
+      computeVisibleArea() {
+        calls.push("canvas.ds.computeVisibleArea");
+        this.visible_area = new Float64Array([
+          -this.state.offset[0],
+          -this.state.offset[1],
+          900 / this.state.scale,
+          700 / this.state.scale,
+        ]);
+      },
     },
+    get positionableItems() { return [...graph.nodes, ...graph.groups]; },
     emitBeforeChange() { calls.push("canvas.emitBeforeChange"); },
     emitAfterChange() { calls.push("canvas.emitAfterChange"); },
+    deselectAll() {
+      calls.push("canvas.deselectAll");
+      for (const item of this.selectedItems) item.selected = false;
+      this.selectedItems.clear();
+      this.setDirty();
+    },
+    selectItems(items, addToCurrentSelection = false) {
+      calls.push(["canvas.selectItems", items.map(({ id }) => String(id)), addToCurrentSelection]);
+      if (!addToCurrentSelection) this.deselectAll();
+      for (const item of items) {
+        item.selected = true;
+        this.selectedItems.add(item);
+        if (item instanceof TestGroup) item.recomputeInsideNodes();
+      }
+      this.setDirty();
+    },
+    fitViewToSelectionAnimated(options = {}) {
+      calls.push(["canvas.fitViewToSelectionAnimated", options]);
+    },
+    moveChildNodesInGroupVueMode(items, deltaX, deltaY) {
+      calls.push(["canvas.moveChildNodesInGroupVueMode", deltaX, deltaY]);
+      for (const item of items) {
+        if (item instanceof TestNode) item.setPos(item.pos[0] + deltaX, item.pos[1] + deltaY);
+        else item.move(deltaX, deltaY, true);
+      }
+    },
     centerOnNode(node) { calls.push(["canvas.centerOnNode", node.id]); },
     setDirty() { calls.push("canvas.setDirty"); },
   };
