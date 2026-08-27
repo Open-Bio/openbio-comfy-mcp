@@ -71,6 +71,7 @@ class Relay:
         self._is_client_connected = is_client_connected or (lambda client_id: True)
         self._sessions: dict[str, _Session] = {}
         self._pending: dict[str, _PendingRequest] = {}
+        self._last_focused_page_id: str | None = None
 
     def register_session(
         self,
@@ -91,6 +92,8 @@ class Relay:
             href=href,
             last_seen=self._clock(),
         )
+        if focused:
+            self._last_focused_page_id = page_id
 
     async def command(
         self,
@@ -159,6 +162,9 @@ class Relay:
         focused = [session for session in self._sessions.values() if session.focused]
         if len(focused) == 1:
             return focused[0]
+        last_focused = self._sessions.get(self._last_focused_page_id)
+        if last_focused is not None:
+            return last_focused
         raise RelayError(
             "AMBIGUOUS_LIVE_CANVAS",
             "More than one live ComfyUI canvas is connected.",

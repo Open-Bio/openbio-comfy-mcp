@@ -207,6 +207,44 @@ def test_multiple_pages_route_to_the_only_focused_page():
     asyncio.run(exercise())
 
 
+def test_most_recently_focused_page_remains_default_after_all_pages_blur():
+    sent = []
+    relay = Relay(send_event=lambda event, data, sid: sent.append((data, sid)))
+
+    def register(suffix, focused):
+        relay.register_session(
+            page_id=f"page-{suffix}",
+            client_id=f"client-{suffix}",
+            canvas_id=f"canvas-{suffix}",
+            workflow_id=f"workflow-{suffix}",
+            focused=focused,
+            href=None,
+        )
+
+    register("a", True)
+    register("b", False)
+    register("a", False)
+    register("b", True)
+    register("b", False)
+
+    async def exercise():
+        pending = asyncio.create_task(
+            relay.command(command="inspect_canvas", arguments={}, timeout=0.1)
+        )
+        await asyncio.sleep(0)
+        payload, sid = sent[0]
+        assert sid == "client-b"
+        relay.receive_reply(
+            page_id="page-b",
+            request_id=payload["request_id"],
+            ok=True,
+            result={"canvas_id": "canvas-b"},
+        )
+        assert await pending == {"canvas_id": "canvas-b"}
+
+    asyncio.run(exercise())
+
+
 def test_multiple_unfocused_pages_report_ambiguity_instead_of_guessing():
     relay = Relay(send_event=lambda event, data, sid: None)
     for suffix in ("a", "b"):

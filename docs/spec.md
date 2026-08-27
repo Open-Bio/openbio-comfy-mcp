@@ -52,7 +52,7 @@ New nodes and groups can be referenced later in the same patch by `temp_ref`. Gr
 
 - A page registers its ComfyUI WebSocket client ID and an ephemeral page ID with the plugin relay.
 - With one connected page, MCP calls target it automatically.
-- With multiple connected pages, the focused page is selected; unresolved ambiguity is reported instead of guessed.
+- With multiple connected pages, the most recently focused page remains the default after focus leaves ComfyUI; if no page has established a default, unresolved ambiguity is reported instead of guessed.
 - The plugin uses ComfyUI's existing HTTP/WebSocket server for relay traffic. The stdio MCP host opens no listening port.
 - Canvas-writing relay endpoints accept loopback requests only.
 - Malformed session, command, and reply envelopes return `INVALID_REQUEST` before changing relay state.
