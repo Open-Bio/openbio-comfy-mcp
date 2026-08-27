@@ -20,10 +20,11 @@ Documentation = "https://github.com/Open-Bio/openbio-comfy-mcp#readme"
 Issues = "https://github.com/Open-Bio/openbio-comfy-mcp/issues"
 
 [tool.comfy]
-# Add the exact Comfy Registry PublisherId before the first Registry release.
+PublisherId = "open-bio"
 DisplayName = "OpenBio Comfy MCP"
 requires-comfyui = ">=0.33.0"
 web = "web"
+includes = ["dist"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

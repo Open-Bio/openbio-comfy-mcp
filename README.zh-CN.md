@@ -9,7 +9,7 @@
 OpenBio Comfy MCP 是一个本地 [Model Context Protocol](https://modelcontextprotocol.io/) 服务器和 ComfyUI V3 扩展，用于检查和编辑当前在 ComfyUI 画布中打开的工作流。它使用 ComfyUI 原生的图、选择、分组、脏状态和撤销机制；不会自动排队、执行或保存工作流。
 
 > [!IMPORTANT]
-> 本项目目前通过源码安装，尚未发布到 Comfy Registry，因此暂时无法在 ComfyUI Manager 中搜索或安装。
+> 已发布版本可通过 ComfyUI Manager 安装。Registry 包已包含打包好的 MCP 服务器，Manager 用户无需运行 `npm ci`。
 
 ## 功能
 
@@ -48,13 +48,23 @@ Python V3 扩展中继
 - 支持本地 stdio 服务器的 MCP Host 应用
 - 使用工具时保持一个 ComfyUI 浏览器或 Desktop 页面处于打开状态
 
-ComfyUI 扩展本身没有额外的 Python 包依赖。`npm ci` 只安装 Node.js MCP 服务器依赖，不会修改 ComfyUI 的 Python 环境。
+ComfyUI 扩展本身没有额外的 Python 包依赖。Registry 版本已包含预构建的 MCP 服务器。源码和开发仓库中的 `npm ci` 只安装 Node.js 依赖并构建该服务器，不会修改 ComfyUI 的 Python 环境。
 
 ## 安装
 
+### ComfyUI Manager（推荐）
+
+打开 ComfyUI Manager，搜索 `OpenBio Comfy MCP` 或 `openbio-comfy-mcp`，选择**安装**，然后重启 ComfyUI。安装后的 MCP 入口文件为：
+
+```text
+<ComfyUI>/custom_nodes/openbio-comfy-mcp/dist/openbio-comfy-mcp.mjs
+```
+
+通过 Registry 安装时无需运行 `npm ci`。
+
 ### 标准源码安装
 
-将仓库直接克隆到 ComfyUI 的 `custom_nodes` 目录，然后安装 MCP 服务器依赖。
+将仓库直接克隆到 ComfyUI 的 `custom_nodes` 目录，然后安装 MCP 服务器依赖并构建打包入口。
 
 Windows PowerShell：
 
@@ -122,7 +132,7 @@ $Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
 
 codex mcp add openbio-comfy-mcp `
   --env OPENBIO_COMFY_URL=http://127.0.0.1:8188 `
-  -- node "$Repo\mcp_host\cli.mjs"
+  -- node "$Repo\dist\openbio-comfy-mcp.mjs"
 
 codex mcp get openbio-comfy-mcp --json
 codex mcp list --json
@@ -139,7 +149,7 @@ codex mcp list --json
   "mcpServers": {
     "openbio-comfy-mcp": {
       "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\mcp_host\\cli.mjs"],
+      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"],
       "env": {
         "OPENBIO_COMFY_URL": "http://127.0.0.1:8188"
       }
@@ -148,7 +158,7 @@ codex mcp list --json
 }
 ```
 
-不同 Host 的配置键可能不同。命令必须启动 `mcp_host/cli.mjs`，`OPENBIO_COMFY_URL` 必须指向本机 ComfyUI 服务器。
+不同 Host 的配置键可能不同。命令必须启动 `dist/openbio-comfy-mcp.mjs`，`OPENBIO_COMFY_URL` 必须指向本机 ComfyUI 服务器。
 
 ## 配置
 
@@ -195,7 +205,7 @@ codex mcp list --json
 ## 故障排查
 
 - `NO_LIVE_CANVAS`：打开或刷新一个 ComfyUI 页面，并保持连接。
-- Host 中没有工具：运行 `npm ci`，检查 `cli.mjs` 的绝对路径，然后重启 MCP Host 应用。
+- Host 中没有工具：检查 `dist/openbio-comfy-mcp.mjs` 的绝对路径，然后重启 MCP Host 应用。源码仓库需先运行 `npm ci`。
 - 健康检查路由不存在：确认仓库位于 `custom_nodes` 下或已正确链接，然后重启 ComfyUI 并检查控制台导入错误。
 - `STALE_CANVAS`：重新调用 `inspect_canvas`，使用新返回的版本构建补丁。
 - 同时打开多个页面：默认使用最近获得焦点的 ComfyUI 页面；无法消除歧义时会返回错误，而不会猜测目标。
@@ -239,8 +249,10 @@ C:\path\to\ComfyUI\.venv\Scripts\python.exe `
 仓库结构：
 
 ```text
+dist/                     Registry 使用的无外部依赖 MCP 打包入口
 mcp_host/                 Node.js stdio MCP 服务器
 openbio_comfy_mcp/        ComfyUI V3 Python 中继扩展
+scripts/                  可复现的 MCP bundle 构建脚本
 web/                      实时页面扩展和画布桥接
 tests/                    Node.js 和 Python 测试
 docs/spec.md              公开行为和安全边界

@@ -9,7 +9,7 @@
 OpenBio Comfy MCP is a local [Model Context Protocol](https://modelcontextprotocol.io/) server and ComfyUI V3 extension for inspecting and editing the workflow currently open on a live ComfyUI canvas. It uses ComfyUI's native graph, selection, group, dirty-state, and undo behavior; it never queues, executes, or saves a workflow automatically.
 
 > [!IMPORTANT]
-> The project is currently installed from source. It has not yet been published to the Comfy Registry, so it is not searchable or installable through ComfyUI Manager.
+> Published releases are installable through ComfyUI Manager. Registry packages include a bundled MCP server, so Manager users do not need to run `npm ci`.
 
 ## Features
 
@@ -48,13 +48,23 @@ The browser page is the authority for the live graph. The Python extension corre
 - An MCP host application that supports local stdio servers
 - A ComfyUI browser or Desktop page kept open while the tools are used
 
-The ComfyUI extension has no additional Python package dependencies. `npm ci` installs only the Node.js MCP server dependency and does not modify the ComfyUI Python environment.
+The ComfyUI extension has no additional Python package dependencies. Registry releases include a prebuilt MCP server. For source and development checkouts, `npm ci` installs only Node.js dependencies and builds that server; it does not modify the ComfyUI Python environment.
 
 ## Install
 
+### ComfyUI Manager (recommended)
+
+Open ComfyUI Manager, search for `OpenBio Comfy MCP` or `openbio-comfy-mcp`, select **Install**, and restart ComfyUI. The installed MCP entry point is:
+
+```text
+<ComfyUI>/custom_nodes/openbio-comfy-mcp/dist/openbio-comfy-mcp.mjs
+```
+
+No `npm ci` step is required for a Registry installation.
+
 ### Standard source installation
 
-Clone the repository directly into ComfyUI's `custom_nodes` directory, then install the MCP server dependency.
+Clone the repository directly into ComfyUI's `custom_nodes` directory, then install the MCP server dependency and build the bundled entry point.
 
 Windows PowerShell:
 
@@ -122,7 +132,7 @@ $Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
 
 codex mcp add openbio-comfy-mcp `
   --env OPENBIO_COMFY_URL=http://127.0.0.1:8188 `
-  -- node "$Repo\mcp_host\cli.mjs"
+  -- node "$Repo\dist\openbio-comfy-mcp.mjs"
 
 codex mcp get openbio-comfy-mcp --json
 codex mcp list --json
@@ -139,7 +149,7 @@ For hosts that use an `mcpServers` JSON configuration, adapt this example with a
   "mcpServers": {
     "openbio-comfy-mcp": {
       "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\mcp_host\\cli.mjs"],
+      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"],
       "env": {
         "OPENBIO_COMFY_URL": "http://127.0.0.1:8188"
       }
@@ -148,7 +158,7 @@ For hosts that use an `mcpServers` JSON configuration, adapt this example with a
 }
 ```
 
-Configuration keys vary by host. The command must start `mcp_host/cli.mjs`, and `OPENBIO_COMFY_URL` must point to the local ComfyUI server.
+Configuration keys vary by host. The command must start `dist/openbio-comfy-mcp.mjs`, and `OPENBIO_COMFY_URL` must point to the local ComfyUI server.
 
 ## Configuration
 
@@ -195,7 +205,7 @@ After installing or updating this repository, restart ComfyUI and reload the bro
 ## Troubleshooting
 
 - `NO_LIVE_CANVAS`: open or reload a ComfyUI page and leave it connected.
-- Tools are missing in the host: run `npm ci`, verify the absolute `cli.mjs` path, and restart the MCP host application.
+- Tools are missing in the host: verify the absolute `dist/openbio-comfy-mcp.mjs` path and restart the MCP host application. For a source checkout, run `npm ci` first.
 - Health endpoint is missing: verify the repository is directly under `custom_nodes` or linked there, then restart ComfyUI and inspect its console for import errors.
 - `STALE_CANVAS`: call `inspect_canvas` again and build a new patch from the returned revision.
 - Multiple pages are open: the most recently focused ComfyUI page is the default target; an unresolved ambiguity is reported instead of guessed.
@@ -239,8 +249,10 @@ C:\path\to\ComfyUI\.venv\Scripts\python.exe `
 Repository layout:
 
 ```text
+dist/                     Bundled, dependency-free Registry MCP entry point
 mcp_host/                 Node.js stdio MCP server
 openbio_comfy_mcp/        ComfyUI V3 Python relay extension
+scripts/                  Reproducible MCP bundle build
 web/                      Live page extension and canvas bridge
 tests/                    Node.js and Python tests
 docs/spec.md              Public behavior and safety boundaries

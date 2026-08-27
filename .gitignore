@@ -9,6 +9,7 @@ __pycache__/
 .coverage
 build/
 dist/
+node.zip
 .env
 .env.*
 !.env.example

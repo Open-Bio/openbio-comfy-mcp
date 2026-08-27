@@ -1,0 +1,5 @@
+.github/
+.gitignore
+AGENTS.md
+docs/agents/
+tests/
