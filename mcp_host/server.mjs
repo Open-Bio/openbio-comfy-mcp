@@ -8,6 +8,15 @@ import { McpHostError, unavailableError } from "./errors.mjs";
 import { searchNodes } from "./search_nodes.mjs";
 
 const NODE_REFERENCE_SCHEMA = { type: ["string", "integer"] };
+const CANVAS_REFERENCE_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", enum: ["node", "group"] },
+    id: NODE_REFERENCE_SCHEMA,
+  },
+  required: ["kind", "id"],
+  additionalProperties: false,
+};
 const POSITION_SCHEMA = {
   type: "array",
   items: { type: "number" },
@@ -148,13 +157,17 @@ const PATCH_OPERATION_SCHEMA = {
 const TOOL_DEFINITIONS = [
   {
     name: "inspect_canvas",
-    description: "Inspect the ComfyUI canvas that is live in a browser or Desktop page.",
+    description: "Inspect a compact live ComfyUI canvas, or details for native node and group refs.",
     inputSchema: {
       type: "object",
       properties: {
         canvas_id: {
           type: "string",
           description: "Opaque canvas identity returned by an earlier inspection.",
+        },
+        refs: {
+          type: "array",
+          items: CANVAS_REFERENCE_SCHEMA,
         },
       },
       additionalProperties: false,
@@ -264,7 +277,7 @@ export function createMcpServer({
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Inspect the live canvas before applying a patch and reuse its canvas_id and revision as base_revision. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
     },
   );
 

@@ -78,7 +78,7 @@ Restart the Codex client after adding the server. Codex Desktop, CLI, and the ID
 
 ## Tools
 
-- `inspect_canvas`: reads the exact connected canvas, revision, native nodes, links and groups, selection, and viewport.
+- `inspect_canvas`: without `refs`, reads a compact topology and geometry snapshot of the exact connected canvas; with native refs such as `{"kind":"node","id":"31"}` or `{"kind":"group","id":"6"}`, reads edit-relevant details only for those items.
 - `search_nodes`: searches the installed ComfyUI `/object_info` catalog and returns a compact connection schema.
 - `apply_canvas_patch`: applies one ordered node, link, or group batch as one native undo transaction. Group operations are `add_group`, `update_group`, `fit_group_to_nodes`, and `remove_group` in addition to the existing node and link operations.
 
@@ -87,9 +87,10 @@ Groups use ComfyUI's native `LGraphGroup`. Their serialized fields are `id`, `ti
 The expected editing flow is:
 
 1. Inspect the live canvas.
-2. Search for any node types needed by the change.
-3. Apply one patch with the returned `canvas_id` and `revision` as `base_revision`.
-4. Inspect again, or use ComfyUI's native undo if the change is not wanted.
+2. Inspect specific native node or group refs when their widget, slot, color, flag, or geometric-membership details are needed.
+3. Search for any node types needed by the change.
+4. Apply one patch with the returned `canvas_id` and `revision` as `base_revision`.
+5. Inspect again, or use ComfyUI's native undo if the change is not wanted.
 
 Only one lightweight revision comparison is made immediately before writing. A stale patch does not write and must be rebuilt from a fresh inspection.
 Before the native transaction starts, the bridge resolves node types, references, widgets, slots, protected removals, and connection types without invoking widget callbacks or changing the live graph.
@@ -99,7 +100,7 @@ Before the native transaction starts, the bridge resolves node types, references
 - Canvas command requests are accepted from loopback only.
 - The bridge exposes typed graph operations, never arbitrary JavaScript, DOM access, filesystem access, shell commands, queueing, or execution.
 - A closed or disconnected page returns `NO_LIVE_CANVAS`; there is no fallback that edits workflow files in the background.
-- Canvas snapshots can contain node values, filenames, prompts, and workflow structure. They are provided to the configured MCP client when it calls `inspect_canvas`; any onward model or service handling follows that client's privacy policy.
+- Compact canvas snapshots contain workflow identity and path, topology, geometry, and user-visible node or group titles; those labels can themselves contain filenames, sample identifiers, or prompts. A ref-specific inspection can additionally contain node values. They are provided to the configured MCP client when it calls `inspect_canvas`; any onward model or service handling follows that client's privacy policy.
 - If ComfyUI is exposed beyond `127.0.0.1`, do not assume the rest of ComfyUI has authentication merely because this bridge restricts its write endpoint.
 
 ## Tests

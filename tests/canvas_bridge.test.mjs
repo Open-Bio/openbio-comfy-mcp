@@ -4,9 +4,16 @@ import test from "node:test";
 import { createLiveCanvas, readLiveCanvasIdentity } from "../web/canvas_bridge.mjs";
 import { createCanvasFixture } from "./helpers/canvas_fixture.mjs";
 
-test("inspect_canvas describes the exact visible workflow and canonical selection", () => {
-  const { app, existing, LiteGraph } = createCanvasFixture();
+test("inspect_canvas returns a compact live workflow snapshot using native string IDs", () => {
+  const { app, existing, graph, LiteGraph } = createCanvasFixture();
   app.canvas.selected_nodes = { ignored: existing };
+  existing.title = "Load data";
+  existing.properties.large_internal_value = "not part of the compact snapshot";
+  existing.widgets[0].value = "sample.h5ad";
+  const downstream = LiteGraph.createNode("OpenBioSummary");
+  downstream.pos = [320, 80];
+  graph.add(downstream);
+  existing.connect("out", downstream, "in");
 
   const result = createLiveCanvas(app, LiteGraph, { pageId: "page-a" }).inspectCanvas();
 
@@ -15,10 +22,29 @@ test("inspect_canvas describes the exact visible workflow and canonical selectio
   assert.equal(result.workflow_path, "workflows/openbio.json");
   assert.equal(result.canvas_id, "page-a:workflow-123:canvas-root");
   assert.match(result.revision, /^v1-[0-9a-f]{8}$/);
-  assert.deepEqual(result.nodes.map(({ id, type, pos }) => ({ id, type, pos })), [
-    { id: 7, type: "OpenBioLoad", pos: [40, 80] },
+  assert.deepEqual(result.nodes, [
+    {
+      id: "7",
+      type: "OpenBioLoad",
+      title: "Load data",
+      pos: [40, 80],
+      size: [180, 80],
+    },
+    {
+      id: String(downstream.id),
+      type: "OpenBioSummary",
+      pos: [320, 80],
+      size: [180, 80],
+    },
   ]);
-  assert.deepEqual(result.links, []);
+  assert.deepEqual(result.links, [
+    {
+      id: "1",
+      from: { node: "7", output: "out" },
+      to: { node: String(downstream.id), input: "in" },
+      type: "*",
+    },
+  ]);
   assert.deepEqual(result.selection, [{ kind: "node", id: "7" }]);
   assert.deepEqual(result.viewport, {
     scale: 1.25,
@@ -27,7 +53,7 @@ test("inspect_canvas describes the exact visible workflow and canonical selectio
   });
 });
 
-test("inspect_canvas returns native groups and identifies a selected group", () => {
+test("inspect_canvas keeps native group refs compact and identifies the selected group", () => {
   const { app, canvas, graph, LiteGraph, TestGroup } = createCanvasFixture();
   const group = new TestGroup("QC");
   group.color = "#2f806d";
@@ -39,13 +65,82 @@ test("inspect_canvas returns native groups and identifies a selected group", () 
   const result = createLiveCanvas(app, LiteGraph, { pageId: "page-a" }).inspectCanvas();
 
   assert.deepEqual(result.groups, [{
-    id: group.id,
+    id: String(group.id),
     title: "QC",
     bounding: [20, 30, 600, 320],
-    color: "#2f806d",
-    flags: { pinned: true },
   }]);
   assert.deepEqual(result.selection, [{ kind: "group", id: String(group.id) }]);
+});
+
+test("inspect_canvas resolves a native node ref to edit-relevant details only", () => {
+  const { app, existing, graph, LiteGraph, TestGroup } = createCanvasFixture();
+  existing.title = "Load data";
+  existing.widgets[0].value = "sample.h5ad";
+  existing.inputs[0].type = "OPENBIO_DATA";
+  existing.outputs[0].type = "OPENBIO_DATA";
+  const downstream = LiteGraph.createNode("OpenBioSummary");
+  downstream.pos = [320, 80];
+  graph.add(downstream);
+  existing.connect("out", downstream, "in");
+  graph.links[0][5] = "OPENBIO_DATA";
+  const group = new TestGroup("Inputs");
+  group._bounding = [20, 30, 240, 180];
+  graph.add(group);
+
+  const result = createLiveCanvas(app, LiteGraph, { pageId: "page-a" }).inspectCanvas({
+    refs: [{ kind: "node", id: "7" }],
+  });
+
+  assert.equal(result.canvas_id, "page-a:workflow-123:canvas-root");
+  assert.match(result.revision, /^v1-[0-9a-f]{8}$/);
+  assert.equal(Object.hasOwn(result, "nodes"), false);
+  assert.equal(Object.hasOwn(result, "groups"), false);
+  assert.deepEqual(result.items, [{
+    kind: "node",
+    id: "7",
+    type: "OpenBioLoad",
+    title: "Load data",
+    pos: [40, 80],
+    size: [180, 80],
+    widgets: { value: "sample.h5ad" },
+    inputs: [{ name: "in", type: "OPENBIO_DATA" }],
+    outputs: [{ name: "out", type: "OPENBIO_DATA" }],
+    groups: [{ kind: "group", id: String(group.id) }],
+  }]);
+  assert.deepEqual(result.links, [{
+    id: "1",
+    from: { node: "7", output: "out" },
+    to: { node: String(downstream.id), input: "in" },
+    type: "OPENBIO_DATA",
+  }]);
+});
+
+test("inspect_canvas resolves a native group ref without mutating derived membership", () => {
+  const { app, graph, LiteGraph, TestGroup } = createCanvasFixture();
+  const outside = LiteGraph.createNode("OpenBioOutside");
+  outside.pos = [600, 500];
+  graph.add(outside);
+  const group = new TestGroup("Inputs");
+  group.color = "#2f806d";
+  group.flags.pinned = true;
+  group._bounding = [20, 30, 240, 180];
+  graph.add(group);
+
+  const result = createLiveCanvas(app, LiteGraph, { pageId: "page-a" }).inspectCanvas({
+    refs: [{ kind: "group", id: String(group.id) }],
+  });
+
+  assert.deepEqual(result.items, [{
+    kind: "group",
+    id: String(group.id),
+    title: "Inputs",
+    bounding: [20, 30, 240, 180],
+    color: "#2f806d",
+    flags: { pinned: true },
+    contained_nodes: [{ kind: "node", id: "7" }],
+  }]);
+  assert.deepEqual(result.links, []);
+  assert.deepEqual(graph.nodes.map(({ id }) => String(id)), ["7", String(outside.id)]);
 });
 
 test("canvas identity distinguishes the root graph from an active subgraph", () => {

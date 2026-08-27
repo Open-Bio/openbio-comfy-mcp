@@ -112,7 +112,7 @@ test("web extension registers the visible page and answers inspect_canvas over C
       workflow_id: "workflow-123",
       canvas_id: "page-a:workflow-123:canvas-root",
       command: "inspect_canvas",
-      arguments: {},
+      arguments: { refs: [{ kind: "node", id: "7" }] },
     },
   });
 
@@ -121,7 +121,9 @@ test("web extension registers the visible page and answers inspect_canvas over C
   assert.equal(reply.body.ok, true);
   assert.equal(reply.body.request_id, "request-1");
   assert.equal(reply.body.result.canvas_id, "page-a:workflow-123:canvas-root");
-  assert.deepEqual(reply.body.result.nodes.map((node) => node.id), [7]);
+  assert.deepEqual(reply.body.result.items.map(({ kind, id }) => ({ kind, id })), [
+    { kind: "node", id: "7" },
+  ]);
 });
 
 test("heartbeat, focus and ComfyUI reconnect refresh the native session", async () => {

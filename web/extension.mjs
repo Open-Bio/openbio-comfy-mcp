@@ -99,7 +99,7 @@ export function createLiveCanvasWebExtension({
 
       let result;
       if (message.command === "inspect_canvas") {
-        result = liveCanvas.inspectCanvas();
+        result = liveCanvas.inspectCanvas(message.arguments);
       } else if (message.command === "apply_canvas_patch") {
         result = await liveCanvas.applyCanvasPatch({
           ...message.arguments,

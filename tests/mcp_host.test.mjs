@@ -76,17 +76,33 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
   await client.connect(transport);
   assert.match(
     client.getInstructions(),
-    /Inspect the live canvas before applying a patch.*never queues or executes/s,
+    /without refs for a compact live topology.*native node or group refs.*never queues or executes/s,
   );
   const listed = await client.listTools();
   assert.deepEqual(
     listed.tools.map(({ name }) => name),
     ["inspect_canvas", "search_nodes", "apply_canvas_patch"],
   );
+  const inspectTool = listed.tools.find(({ name }) => name === "inspect_canvas");
+  assert.deepEqual(inspectTool.inputSchema.properties.refs, {
+    type: "array",
+    items: {
+      type: "object",
+      properties: {
+        kind: { type: "string", enum: ["node", "group"] },
+        id: { type: ["string", "integer"] },
+      },
+      required: ["kind", "id"],
+      additionalProperties: false,
+    },
+  });
 
   const result = await client.callTool({
     name: "inspect_canvas",
-    arguments: { canvas_id: "canvas-7" },
+    arguments: {
+      canvas_id: "canvas-7",
+      refs: [{ kind: "node", id: "31" }],
+    },
   });
 
   assert.equal(result.isError, undefined);
@@ -94,7 +110,10 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
   assert.deepEqual(received, {
     canvas_id: "canvas-7",
     command: "inspect_canvas",
-    arguments: { canvas_id: "canvas-7" },
+    arguments: {
+      canvas_id: "canvas-7",
+      refs: [{ kind: "node", id: "31" }],
+    },
   });
 });
 

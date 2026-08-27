@@ -371,6 +371,105 @@ function canonicalSelection(canvas, graph) {
   return items.sort((left, right) => `${left.kind}:${left.id}`.localeCompare(`${right.kind}:${right.id}`));
 }
 
+function compactNode(node) {
+  return {
+    id: String(node.id),
+    type: node.type,
+    ...(node.title ? { title: node.title } : {}),
+    pos: Array.from(node.pos),
+    size: Array.from(node.size),
+  };
+}
+
+function compactLink(graph, link) {
+  const [id, sourceId, outputIndex, targetId, inputIndex, type] = link;
+  const source = graph.getNodeById(sourceId);
+  const target = graph.getNodeById(targetId);
+  return {
+    id: String(id),
+    from: {
+      node: String(sourceId),
+      output: source?.outputs?.[outputIndex]?.name ?? String(outputIndex),
+    },
+    to: {
+      node: String(targetId),
+      input: target?.inputs?.[inputIndex]?.name ?? String(inputIndex),
+    },
+    ...(type == null ? {} : { type: clone(type) }),
+  };
+}
+
+function compactGroup(group) {
+  return {
+    id: String(group.id),
+    title: group.title,
+    bounding: clone(group.bounding),
+  };
+}
+
+function nodeRect(node) {
+  return node.boundingRect ?? [node.pos[0], node.pos[1], node.size[0], node.size[1]];
+}
+
+function groupContainsNode(group, node) {
+  const groupRect = group.boundingRect;
+  const rect = nodeRect(node);
+  const centerX = rect[0] + rect[2] * 0.5;
+  const centerY = rect[1] + rect[3] * 0.5;
+  return centerX >= groupRect[0]
+    && centerX < groupRect[0] + groupRect[2]
+    && centerY >= groupRect[1]
+    && centerY < groupRect[1] + groupRect[3];
+}
+
+function namedWidgetValues(node, serializedNode) {
+  if (serializedNode?.widgets_values_named) {
+    return clone(serializedNode.widgets_values_named);
+  }
+  const indexedValues = serializedNode?.widgets_values ?? [];
+  const values = {};
+  for (const [index, widget] of (node.widgets ?? []).entries()) {
+    if (widget.serialize === false) continue;
+    const value = Object.hasOwn(indexedValues, index) ? indexedValues[index] : widget.value;
+    values[widget.name] = clone(value ?? null);
+  }
+  return values;
+}
+
+function compactSlot(slot) {
+  return {
+    name: slot.name,
+    ...(slot.type == null ? {} : { type: clone(slot.type) }),
+  };
+}
+
+function detailedNode(graph, node, serializedNode) {
+  return {
+    kind: "node",
+    ...compactNode(node),
+    widgets: namedWidgetValues(node, serializedNode),
+    inputs: (node.inputs ?? []).map(compactSlot),
+    outputs: (node.outputs ?? []).map(compactSlot),
+    groups: (graph.groups ?? [])
+      .filter((group) => groupContainsNode(group, node))
+      .map((group) => ({ kind: "group", id: String(group.id) })),
+  };
+}
+
+function detailedGroup(graph, group) {
+  return {
+    kind: "group",
+    id: String(group.id),
+    title: group.title,
+    bounding: Array.from(group.boundingRect),
+    color: group.color ?? null,
+    flags: clone(group.flags ?? {}),
+    contained_nodes: graph.nodes
+      .filter((node) => groupContainsNode(group, node))
+      .map((node) => ({ kind: "node", id: String(node.id) })),
+  };
+}
+
 export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
   const canvas = app.canvas;
   const graph = canvas.graph;
@@ -380,24 +479,49 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
   return {
     identity: clone(identity),
 
-    inspectCanvas() {
+    inspectCanvas({ refs } = {}) {
       const snapshot = graph.serialize();
-      return {
+      const inspectionContext = {
         page_id: identity.page_id,
         workflow_id: identity.workflow_id,
         workflow_path: identity.workflow_path,
         graph_id: identity.graph_id,
         canvas_id: identity.canvas_id,
         revision: revisionOf(snapshot),
-        nodes: clone(snapshot.nodes ?? []),
-        links: clone(snapshot.links ?? []),
-        groups: clone(snapshot.groups ?? []),
         selection: canonicalSelection(canvas, graph),
         viewport: {
           scale: canvas.ds.state.scale,
           offset: Array.from(canvas.ds.state.offset),
           visible_area: Array.from(canvas.ds.visible_area),
         },
+      };
+      const links = (snapshot.links ?? []).map((link) => compactLink(graph, link));
+      if (refs !== undefined) {
+        const serializedNodes = new Map(
+          (snapshot.nodes ?? []).map((node) => [String(node.id), node]),
+        );
+        const nodeIds = new Set(
+          refs
+            .filter((reference) => reference.kind === "node")
+            .map((reference) => String(reference.id)),
+        );
+        return {
+          ...inspectionContext,
+          items: refs.map((reference) => {
+            if (reference.kind === "group") {
+              return detailedGroup(graph, resolveGroup(graph, reference.id, {}));
+            }
+            const node = resolveNode(graph, reference.id, {});
+            return detailedNode(graph, node, serializedNodes.get(String(node.id)));
+          }),
+          links: links.filter(({ from, to }) => nodeIds.has(from.node) || nodeIds.has(to.node)),
+        };
+      }
+      return {
+        ...inspectionContext,
+        nodes: graph.nodes.map(compactNode),
+        links,
+        groups: (snapshot.groups ?? []).map(compactGroup),
       };
     },
 

@@ -18,7 +18,9 @@ Expose the ComfyUI workflow currently open in a user's browser or Desktop window
 
 ### `inspect_canvas`
 
-Returns the active live canvas identity, revision, serialized nodes, links and groups, selection, and viewport. A requested page or workflow must match the page that actually executes the command.
+Without `refs`, returns the active live canvas identity, revision, selection, viewport, and a compact topology and geometry projection of its nodes, links, and groups. Node and group IDs are canonical strings and serve directly as stable refs within that workflow; the bridge creates no second ref namespace.
+
+With native node or group `refs`, returns edit-relevant details only for those items plus links incident to requested nodes. Node details contain named widget values, named input/output slots, and containing group refs. Group details contain native color and flags plus geometrically contained node refs. A requested page or workflow must match the page that actually executes the command.
 
 ### `search_nodes`
 
