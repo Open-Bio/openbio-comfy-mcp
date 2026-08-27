@@ -64,6 +64,15 @@ function resolveNode(graph, reference, tempIds) {
   return node;
 }
 
+function resolveGroup(graph, reference, tempIds) {
+  const groupId = Object.hasOwn(tempIds, reference) ? tempIds[reference] : reference;
+  const group = graph.groups?.find((candidate) => String(candidate.id) === String(groupId));
+  if (!group) {
+    throw bridgeError("group_not_found", `Group does not exist: ${reference}`, { reference });
+  }
+  return group;
+}
+
 function inputWidget(node, inputName) {
   const widget = node.widgets?.find((candidate) => candidate.name === inputName);
   if (!widget) {
@@ -111,9 +120,27 @@ function assertNodeRemovable(node) {
   }
 }
 
-function applyOperations(canvas, graph, operations, preparedNodes) {
+function setGroupBounding(group, bounding) {
+  group.pos = [bounding[0], bounding[1]];
+  group.size = [bounding[2], bounding[3]];
+}
+
+function updateGroup(group, operation) {
+  if (Object.hasOwn(operation, "title")) group.title = operation.title;
+  if (Object.hasOwn(operation, "bounding")) setGroupBounding(group, operation.bounding);
+  if (Object.hasOwn(operation, "color")) {
+    if (operation.color === null) delete group.color;
+    else group.color = operation.color;
+  }
+  if (Object.hasOwn(operation, "pinned")) group.pin(operation.pinned);
+  if (Object.hasOwn(operation, "bounding")) group.recomputeInsideNodes();
+}
+
+function applyOperations(canvas, graph, operations, preparedNodes, preparedGroups) {
   const idMap = {};
+  const groupIdMap = {};
   const changedNodeIds = new Set();
+  const changedGroupIds = new Set();
   let unpositionedNodes = 0;
   for (const operation of operations) {
     switch (operation.op) {
@@ -132,6 +159,50 @@ function applyOperations(canvas, graph, operations, preparedNodes) {
         graph.add(node);
         idMap[operation.temp_ref] = String(node.id);
         changedNodeIds.add(String(node.id));
+        break;
+      }
+      case "add_group": {
+        const group = preparedGroups[operation.temp_ref];
+        if (operation.bounding) {
+          setGroupBounding(group, operation.bounding);
+        } else {
+          const area = canvas.ds.visible_area ?? canvas.visible_area;
+          group.pos = [
+            area[0] + area[2] / 2 - group.size[0] / 2,
+            area[1] + area[3] / 2 - group.size[1] / 2,
+          ];
+        }
+        if (Object.hasOwn(operation, "color")) group.color = operation.color;
+        if (Object.hasOwn(operation, "pinned")) group.pin(operation.pinned);
+        graph.add(group);
+        group.recomputeInsideNodes();
+        groupIdMap[operation.temp_ref] = String(group.id);
+        changedGroupIds.add(String(group.id));
+        break;
+      }
+      case "update_group": {
+        const group = resolveGroup(graph, operation.group_id, groupIdMap);
+        updateGroup(group, operation);
+        changedGroupIds.add(String(group.id));
+        break;
+      }
+      case "remove_group": {
+        const group = resolveGroup(graph, operation.group_id, groupIdMap);
+        changedGroupIds.add(String(group.id));
+        graph.remove(group);
+        if (graph.groups?.includes(group)) {
+          throw bridgeError("removal_rejected", `ComfyUI rejected removal of group: ${group.id}`, {
+            group_id: String(group.id),
+          });
+        }
+        break;
+      }
+      case "fit_group_to_nodes": {
+        const group = resolveGroup(graph, operation.group_id, groupIdMap);
+        const nodes = operation.node_ids.map((reference) => resolveNode(graph, reference, idMap));
+        group.resizeTo(nodes, operation.padding ?? 10);
+        group.recomputeInsideNodes();
+        changedGroupIds.add(String(group.id));
         break;
       }
       case "remove_node": {
@@ -184,12 +255,19 @@ function applyOperations(canvas, graph, operations, preparedNodes) {
     }
   }
   graph.setDirtyCanvas(true, true);
-  return { idMap, changedNodeIds: [...changedNodeIds].sort() };
+  return {
+    idMap,
+    groupIdMap,
+    changedNodeIds: [...changedNodeIds].sort(),
+    changedGroupIds: [...changedGroupIds].sort(),
+  };
 }
 
 function preflightOperations(graph, LiteGraph, operations) {
   const preparedNodes = {};
+  const preparedGroups = {};
   const removedNodes = new Set();
+  const removedGroups = new Set();
 
   function plannedNode(reference) {
     const node = Object.hasOwn(preparedNodes, reference)
@@ -201,12 +279,26 @@ function preflightOperations(graph, LiteGraph, operations) {
     return node;
   }
 
+  function plannedGroup(reference) {
+    const group = Object.hasOwn(preparedGroups, reference)
+      ? preparedGroups[reference]
+      : graph.groups?.find((candidate) => String(candidate.id) === String(reference));
+    if (!group || removedGroups.has(group)) {
+      throw bridgeError("group_not_found", `Group does not exist: ${reference}`, { reference });
+    }
+    return group;
+  }
+
+  function assertUniqueTempRef(tempRef) {
+    if (Object.hasOwn(preparedNodes, tempRef) || Object.hasOwn(preparedGroups, tempRef)) {
+      throw bridgeError("duplicate_temp_ref", `Duplicate temp_ref: ${tempRef}`);
+    }
+  }
+
   for (const operation of operations) {
     switch (operation.op) {
       case "add_node": {
-        if (Object.hasOwn(preparedNodes, operation.temp_ref)) {
-          throw bridgeError("duplicate_temp_ref", `Duplicate temp_ref: ${operation.temp_ref}`);
-        }
+        assertUniqueTempRef(operation.temp_ref);
         const node = LiteGraph.createNode(operation.class_type);
         if (!node) {
           throw bridgeError("node_type_not_found", `Node type is not installed: ${operation.class_type}`, {
@@ -216,6 +308,22 @@ function preflightOperations(graph, LiteGraph, operations) {
         preparedNodes[operation.temp_ref] = node;
         break;
       }
+      case "add_group":
+        assertUniqueTempRef(operation.temp_ref);
+        preparedGroups[operation.temp_ref] = new LiteGraph.LGraphGroup(operation.title);
+        break;
+      case "update_group":
+        plannedGroup(operation.group_id);
+        break;
+      case "remove_group": {
+        const group = plannedGroup(operation.group_id);
+        removedGroups.add(group);
+        break;
+      }
+      case "fit_group_to_nodes":
+        plannedGroup(operation.group_id);
+        for (const reference of operation.node_ids) plannedNode(reference);
+        break;
       case "remove_node": {
         const node = plannedNode(operation.node_id);
         assertNodeRemovable(node);
@@ -247,7 +355,7 @@ function preflightOperations(graph, LiteGraph, operations) {
         });
     }
   }
-  return preparedNodes;
+  return { preparedNodes, preparedGroups };
 }
 
 function canonicalSelection(canvas, graph) {
@@ -283,6 +391,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         revision: revisionOf(snapshot),
         nodes: clone(snapshot.nodes ?? []),
         links: clone(snapshot.links ?? []),
+        groups: clone(snapshot.groups ?? []),
         selection: canonicalSelection(canvas, graph),
         viewport: {
           scale: canvas.ds.state.scale,
@@ -316,7 +425,11 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         });
       }
 
-      const preparedNodes = preflightOperations(graph, LiteGraph, patch.operations ?? []);
+      const { preparedNodes, preparedGroups } = preflightOperations(
+        graph,
+        LiteGraph,
+        patch.operations ?? [],
+      );
 
       const changeTracker = workflow.changeTracker;
       const trackerDepth = Number.isInteger(changeTracker?.changeCount)
@@ -392,7 +505,13 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
 
       let applied;
       try {
-        applied = applyOperations(canvas, graph, patch.operations ?? [], preparedNodes);
+        applied = applyOperations(
+          canvas,
+          graph,
+          patch.operations ?? [],
+          preparedNodes,
+          preparedGroups,
+        );
       } catch (error) {
         rememberError(error);
         restoreGraph();
@@ -425,7 +544,9 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         canvas_id: identity.canvas_id,
         revision: revisionOf(appliedSnapshot),
         id_map: applied.idMap,
+        group_id_map: applied.groupIdMap,
         changed_node_ids: applied.changedNodeIds,
+        changed_group_ids: applied.changedGroupIds,
         undoable: true,
       };
     },

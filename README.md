@@ -1,6 +1,6 @@
 # OpenBio Comfy MCP
 
-OpenBio Comfy MCP lets a local MCP client inspect and edit the ComfyUI canvas that is currently open in a browser or ComfyUI Desktop. Changes use ComfyUI's native graph, links, dirty tracking, and undo transaction; the bridge never queues, executes, or saves a workflow automatically.
+OpenBio Comfy MCP lets a local MCP client inspect and edit the ComfyUI canvas that is currently open in a browser or ComfyUI Desktop. Changes use ComfyUI's native graph, groups, links, dirty tracking, and undo transaction; the bridge never queues, executes, or saves a workflow automatically.
 
 ## Architecture
 
@@ -78,9 +78,11 @@ Restart the Codex client after adding the server. Codex Desktop, CLI, and the ID
 
 ## Tools
 
-- `inspect_canvas`: reads the exact connected canvas, revision, native nodes and links, selection, and viewport.
+- `inspect_canvas`: reads the exact connected canvas, revision, native nodes, links and groups, selection, and viewport.
 - `search_nodes`: searches the installed ComfyUI `/object_info` catalog and returns a compact connection schema.
-- `apply_canvas_patch`: applies one ordered `add_node`, `remove_node`, `set_input`, `connect`, `disconnect`, or `move_node` batch as one native undo transaction.
+- `apply_canvas_patch`: applies one ordered node, link, or group batch as one native undo transaction. Group operations are `add_group`, `update_group`, `fit_group_to_nodes`, and `remove_group` in addition to the existing node and link operations.
+
+Groups use ComfyUI's native `LGraphGroup`. Their serialized fields are `id`, `title`, `bounding`, `color`, and `flags`; membership is derived geometrically and is not stored as a node-ID list. `update_group.bounding` changes only the group rectangle. `fit_group_to_nodes` resizes that rectangle around explicitly named nodes without moving them. Added groups can be referenced later in the same patch by `temp_ref`, and successful patches return `group_id_map` and `changed_group_ids`.
 
 The expected editing flow is:
 

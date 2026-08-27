@@ -24,6 +24,10 @@ export function createCanvasFixture() {
       };
     }
 
+    get boundingRect() {
+      return [this.pos[0], this.pos[1], this.size[0], this.size[1]];
+    }
+
     connect(output, target, input) {
       const outputIndex = typeof output === "string" ? this.outputs.findIndex((slot) => slot.name === output) : output;
       const inputIndex = typeof input === "string" ? target.inputs.findIndex((slot) => slot.name === input) : input;
@@ -50,17 +54,96 @@ export function createCanvasFixture() {
     }
   }
 
+  class TestGroup {
+    constructor(title = "Group") {
+      this.id = -1;
+      this.title = title || "Group";
+      this.color = "#AAA";
+      this.flags = {};
+      this._bounding = [10, 10, 140, 80];
+      this.graph = undefined;
+    }
+
+    get pos() {
+      return this._bounding.slice(0, 2);
+    }
+
+    set pos(value) {
+      this._bounding[0] = value[0];
+      this._bounding[1] = value[1];
+    }
+
+    get size() {
+      return this._bounding.slice(2, 4);
+    }
+
+    set size(value) {
+      this._bounding[2] = Math.max(140, value[0]);
+      this._bounding[3] = Math.max(80, value[1]);
+    }
+
+    get boundingRect() {
+      return this._bounding;
+    }
+
+    serialize() {
+      return {
+        id: this.id,
+        title: this.title,
+        bounding: [...this._bounding],
+        color: this.color,
+        flags: structuredClone(this.flags),
+      };
+    }
+
+    configure(data) {
+      this.id = data.id;
+      this.title = data.title;
+      this._bounding = [...data.bounding];
+      this.color = data.color;
+      this.flags = structuredClone(data.flags ?? {});
+    }
+
+    pin(value) {
+      if (value) this.flags.pinned = true;
+      else delete this.flags.pinned;
+    }
+
+    resizeTo(items, padding = 10) {
+      const bounds = [...items].map((item) => item.boundingRect);
+      if (bounds.length === 0) return;
+      const left = Math.min(...bounds.map((rect) => rect[0])) - padding;
+      const top = Math.min(...bounds.map((rect) => rect[1])) - padding;
+      const right = Math.max(...bounds.map((rect) => rect[0] + rect[2])) + padding;
+      const bottom = Math.max(...bounds.map((rect) => rect[1] + rect[3])) + padding;
+      this._bounding = [left, top - 30, right - left, bottom - top + 30];
+    }
+
+    recomputeInsideNodes() {
+      calls.push(["group.recomputeInsideNodes", this.id]);
+    }
+  }
+
   class TestGraph {
     constructor(snapshot) {
       this.id = "canvas-root";
       this.nodes = [];
+      this.groups = [];
       this.links = [];
       this.lastNodeId = 0;
+      this.lastGroupId = 0;
       this.lastLinkId = 0;
       if (snapshot) this.configure(snapshot);
     }
 
     add(node) {
+      if (node instanceof TestGroup) {
+        if (node.id === -1) node.id = ++this.lastGroupId;
+        this.lastGroupId = Math.max(this.lastGroupId, Number(node.id));
+        node.graph = this;
+        this.groups.push(node);
+        return node;
+      }
       if (node.id === -1) node.id = ++this.lastNodeId;
       this.lastNodeId = Math.max(this.lastNodeId, Number(node.id));
       node.graph = this;
@@ -68,6 +151,11 @@ export function createCanvasFixture() {
       return node;
     }
     remove(node) {
+      if (node instanceof TestGroup) {
+        this.groups = this.groups.filter((candidate) => candidate !== node);
+        node.graph = undefined;
+        return;
+      }
       if (node.ignore_remove) return;
       this.nodes = this.nodes.filter((candidate) => candidate !== node);
       this.links = this.links.filter((link) => link[1] !== node.id && link[3] !== node.id);
@@ -79,16 +167,20 @@ export function createCanvasFixture() {
       return {
         id: this.id,
         last_node_id: this.lastNodeId,
+        last_group_id: this.lastGroupId,
         last_link_id: this.lastLinkId,
         nodes: this.nodes.map((node) => node.serialize()),
+        groups: this.groups.map((group) => group.serialize()),
         links: structuredClone(this.links),
       };
     }
     configure(snapshot) {
       this.id = snapshot.id;
       this.lastNodeId = snapshot.last_node_id;
+      this.lastGroupId = snapshot.last_group_id ?? 0;
       this.lastLinkId = snapshot.last_link_id;
       this.nodes = [];
+      this.groups = [];
       this.links = [];
       for (const data of snapshot.nodes) {
         const node = new TestNode(data.type);
@@ -98,6 +190,11 @@ export function createCanvasFixture() {
         node.properties = structuredClone(data.properties ?? {});
         data.widgets_values?.forEach((value, index) => { node.widgets[index].value = structuredClone(value); });
         this.add(node);
+      }
+      for (const data of snapshot.groups ?? []) {
+        const group = new TestGroup();
+        group.configure(data);
+        this.add(group);
       }
       for (const link of snapshot.links) {
         const source = this.getNodeById(link[1]);
@@ -112,6 +209,7 @@ export function createCanvasFixture() {
     setDirtyCanvas() { calls.push("graph.setDirtyCanvas"); }
     clear() {
       this.nodes = [];
+      this.groups = [];
       this.links = [];
     }
   }
@@ -145,10 +243,21 @@ export function createCanvasFixture() {
     extensionManager: { workflow: { activeWorkflow } },
   };
   const LiteGraph = {
+    LGraphGroup: TestGroup,
     createNode(type) {
       return type === "Missing" ? null : new TestNode(type);
     },
   };
 
-  return { app, canvas, graph, existing, activeWorkflow, LiteGraph, calls, TestNode };
+  return {
+    app,
+    canvas,
+    graph,
+    existing,
+    activeWorkflow,
+    LiteGraph,
+    calls,
+    TestNode,
+    TestGroup,
+  };
 }

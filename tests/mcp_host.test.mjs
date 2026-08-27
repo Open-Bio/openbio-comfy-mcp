@@ -116,6 +116,11 @@ test("apply_canvas_patch sends one ordered patch to the selected live canvas", a
     temp_ref: "load",
     class_type: "OpenBioLoadH5AD",
     pos: [100, 200],
+  }, {
+    op: "add_group",
+    temp_ref: "inputs",
+    title: "Inputs",
+    bounding: [80, 160, 380, 240],
   }];
 
   const result = await client.callTool({
@@ -280,6 +285,30 @@ test("tools/list advertises the exact supported GraphPatch operations", async (t
         op: "move_node",
         fields: ["op", "node_id", "pos"],
         required: ["op", "node_id", "pos"],
+        additionalProperties: false,
+      },
+      {
+        op: "add_group",
+        fields: ["op", "temp_ref", "title", "bounding", "color", "pinned"],
+        required: ["op", "temp_ref", "title"],
+        additionalProperties: false,
+      },
+      {
+        op: "update_group",
+        fields: ["op", "group_id", "title", "bounding", "color", "pinned"],
+        required: ["op", "group_id"],
+        additionalProperties: false,
+      },
+      {
+        op: "remove_group",
+        fields: ["op", "group_id"],
+        required: ["op", "group_id"],
+        additionalProperties: false,
+      },
+      {
+        op: "fit_group_to_nodes",
+        fields: ["op", "group_id", "node_ids", "padding"],
+        required: ["op", "group_id", "node_ids"],
         additionalProperties: false,
       },
     ],

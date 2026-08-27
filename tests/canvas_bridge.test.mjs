@@ -27,6 +27,27 @@ test("inspect_canvas describes the exact visible workflow and canonical selectio
   });
 });
 
+test("inspect_canvas returns native groups and identifies a selected group", () => {
+  const { app, canvas, graph, LiteGraph, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("QC");
+  group.color = "#2f806d";
+  group._bounding = [20, 30, 600, 320];
+  group.flags.pinned = true;
+  graph.add(group);
+  canvas.selectedItems = new Set([group]);
+
+  const result = createLiveCanvas(app, LiteGraph, { pageId: "page-a" }).inspectCanvas();
+
+  assert.deepEqual(result.groups, [{
+    id: group.id,
+    title: "QC",
+    bounding: [20, 30, 600, 320],
+    color: "#2f806d",
+    flags: { pinned: true },
+  }]);
+  assert.deepEqual(result.selection, [{ kind: "group", id: String(group.id) }]);
+});
+
 test("canvas identity distinguishes the root graph from an active subgraph", () => {
   const { app } = createCanvasFixture();
   const root = readLiveCanvasIdentity(app, "page-a");
@@ -84,6 +105,180 @@ test("apply_canvas_patch edits the live graph in one native transaction", async 
       "canvas.emitAfterChange",
     ],
   );
+});
+
+test("apply_canvas_patch adds and updates a native group in one transaction", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [
+      {
+        op: "add_group",
+        temp_ref: "analysis",
+        title: "Initial",
+        bounding: [10, 20, 240, 160],
+        color: "#112233",
+        pinned: true,
+      },
+      {
+        op: "update_group",
+        group_id: "analysis",
+        title: "Analysis",
+        bounding: [30, 40, 360, 220],
+        color: null,
+        pinned: false,
+      },
+    ],
+  });
+
+  const group = graph.groups.find(({ id }) => String(id) === applied.group_id_map.analysis);
+  assert.equal(group.title, "Analysis");
+  assert.deepEqual(group._bounding, [30, 40, 360, 220]);
+  assert.equal(group.color, undefined);
+  assert.deepEqual(group.flags, {});
+  assert.deepEqual(applied.changed_group_ids, [String(group.id)]);
+  assert.deepEqual(applied.changed_node_ids, []);
+  assert.notEqual(applied.revision, inspected.revision);
+  assert.equal(applied.undoable, true);
+  assert.deepEqual(
+    calls.filter((call) => typeof call === "string" && call.includes("Change")),
+    [
+      "canvas.emitBeforeChange",
+      "graph.beforeChange",
+      "graph.afterChange",
+      "canvas.emitAfterChange",
+    ],
+  );
+});
+
+test("fit_group_to_nodes fits moved and newly added nodes without moving them", async () => {
+  const { app, graph, LiteGraph } = createCanvasFixture();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [
+      { op: "move_node", node_id: "7", pos: [100, 100] },
+      { op: "add_node", temp_ref: "summary", class_type: "OpenBioSummary", pos: [300, 200] },
+      { op: "add_group", temp_ref: "fitted", title: "Fitted" },
+      {
+        op: "fit_group_to_nodes",
+        group_id: "fitted",
+        node_ids: ["7", "summary"],
+        padding: 20,
+      },
+    ],
+  });
+
+  const group = graph.groups.find(({ id }) => String(id) === applied.group_id_map.fitted);
+  assert.deepEqual(graph.getNodeById(7).pos, [100, 100]);
+  assert.deepEqual(graph.getNodeById(applied.id_map.summary).pos, [300, 200]);
+  assert.deepEqual(group._bounding, [80, 50, 420, 250]);
+});
+
+test("remove_group removes only the group and keeps its nodes", async () => {
+  const { app, graph, LiteGraph, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Temporary");
+  group._bounding = [0, 0, 400, 300];
+  graph.add(group);
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const applied = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [{ op: "remove_group", group_id: group.id }],
+  });
+
+  assert.deepEqual(graph.groups, []);
+  assert.equal(graph.getNodeById(7)?.type, "OpenBioLoad");
+  assert.deepEqual(applied.changed_group_ids, [String(group.id)]);
+});
+
+test("invalid group references are rejected before the live graph changes", async () => {
+  for (const operation of [
+    { op: "update_group", group_id: "missing", title: "Nope" },
+    {
+      op: "fit_group_to_nodes",
+      group_id: "missing",
+      node_ids: ["7"],
+    },
+  ]) {
+    const { app, graph, LiteGraph, calls } = createCanvasFixture();
+    const before = graph.serialize();
+    const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+    const inspected = liveCanvas.inspectCanvas();
+
+    await assert.rejects(
+      liveCanvas.applyCanvasPatch({
+        canvas_id: inspected.canvas_id,
+        base_revision: inspected.revision,
+        operations: [
+          { op: "move_node", node_id: "7", pos: [500, 500] },
+          operation,
+        ],
+      }),
+      (error) => error.code === "group_not_found",
+    );
+
+    assert.deepEqual(graph.serialize(), before);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test("fit_group_to_nodes rejects a missing node before the live graph changes", async () => {
+  const { app, graph, LiteGraph, calls, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Existing");
+  graph.add(group);
+  const before = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    liveCanvas.applyCanvasPatch({
+      canvas_id: inspected.canvas_id,
+      base_revision: inspected.revision,
+      operations: [
+        { op: "move_node", node_id: "7", pos: [500, 500] },
+        { op: "fit_group_to_nodes", group_id: group.id, node_ids: ["missing"] },
+      ],
+    }),
+    (error) => error.code === "node_not_found",
+  );
+
+  assert.deepEqual(graph.serialize(), before);
+  assert.deepEqual(calls, []);
+});
+
+test("a failed patch restores group changes from the prior snapshot", async () => {
+  const { app, graph, existing, LiteGraph, TestGroup } = createCanvasFixture();
+  const group = new TestGroup("Original");
+  group._bounding = [20, 30, 300, 200];
+  graph.add(group);
+  const before = graph.serialize();
+  existing.widgets[0].callback = () => { throw new Error("widget failed"); };
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    liveCanvas.applyCanvasPatch({
+      canvas_id: inspected.canvas_id,
+      base_revision: inspected.revision,
+      operations: [
+        { op: "update_group", group_id: group.id, title: "Changed" },
+        { op: "set_input", node_id: "7", input_name: "value", value: "temporary" },
+      ],
+    }),
+    /widget failed/,
+  );
+
+  assert.deepEqual(graph.serialize(), before);
 });
 
 test("a stale revision is rejected before the native transaction starts", async () => {
@@ -353,6 +548,21 @@ test("unpositioned added nodes start at the visible canvas center", async () => 
 
   assert.deepEqual(graph.getNodeById(result.id_map.first).pos, [370, 330]);
   assert.deepEqual(graph.getNodeById(result.id_map.second).pos, [410, 330]);
+});
+
+test("an unpositioned added group starts at the visible canvas center", async () => {
+  const { app, graph, LiteGraph } = createCanvasFixture();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const result = await liveCanvas.applyCanvasPatch({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    operations: [{ op: "add_group", temp_ref: "centered", title: "Centered" }],
+  });
+
+  const group = graph.groups.find(({ id }) => String(id) === result.group_id_map.centered);
+  assert.deepEqual(group._bounding, [390, 330, 140, 80]);
 });
 
 test("the native transaction closes before graph microtasks run", async () => {

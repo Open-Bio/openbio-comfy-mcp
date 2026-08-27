@@ -14,6 +14,12 @@ const POSITION_SCHEMA = {
   minItems: 2,
   maxItems: 2,
 };
+const BOUNDING_SCHEMA = {
+  type: "array",
+  items: { type: "number" },
+  minItems: 4,
+  maxItems: 4,
+};
 const PATCH_OPERATION_SCHEMA = {
   oneOf: [
     {
@@ -80,6 +86,60 @@ const PATCH_OPERATION_SCHEMA = {
         pos: POSITION_SCHEMA,
       },
       required: ["op", "node_id", "pos"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        op: { const: "add_group" },
+        temp_ref: {
+          type: "string",
+          pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+        },
+        title: { type: "string" },
+        bounding: BOUNDING_SCHEMA,
+        color: { type: "string" },
+        pinned: { type: "boolean" },
+      },
+      required: ["op", "temp_ref", "title"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        op: { const: "update_group" },
+        group_id: NODE_REFERENCE_SCHEMA,
+        title: { type: "string" },
+        bounding: BOUNDING_SCHEMA,
+        color: { type: ["string", "null"] },
+        pinned: { type: "boolean" },
+      },
+      required: ["op", "group_id"],
+      minProperties: 3,
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        op: { const: "remove_group" },
+        group_id: NODE_REFERENCE_SCHEMA,
+      },
+      required: ["op", "group_id"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      properties: {
+        op: { const: "fit_group_to_nodes" },
+        group_id: NODE_REFERENCE_SCHEMA,
+        node_ids: {
+          type: "array",
+          items: NODE_REFERENCE_SCHEMA,
+          minItems: 1,
+        },
+        padding: { type: "number", minimum: 0, default: 10 },
+      },
+      required: ["op", "group_id", "node_ids"],
       additionalProperties: false,
     },
   ],
