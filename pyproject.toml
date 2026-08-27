@@ -8,9 +8,19 @@ description = "Live-canvas MCP bridge for ComfyUI and OpenBio."
 version = "0.1.0"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["comfyui", "mcp", "model-context-protocol", "openbio"]
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/Open-Bio/openbio-comfy-mcp"
+Repository = "https://github.com/Open-Bio/openbio-comfy-mcp"
+Documentation = "https://github.com/Open-Bio/openbio-comfy-mcp#readme"
+Issues = "https://github.com/Open-Bio/openbio-comfy-mcp/issues"
+
 [tool.comfy]
+# Add the exact Comfy Registry PublisherId before the first Registry release.
 DisplayName = "OpenBio Comfy MCP"
 requires-comfyui = ">=0.33.0"
 web = "web"

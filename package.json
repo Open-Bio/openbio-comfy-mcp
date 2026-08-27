@@ -2,6 +2,22 @@
   "name": "openbio-comfy-mcp",
   "version": "0.1.0",
   "private": true,
+  "description": "Local MCP bridge for inspecting and editing a live ComfyUI canvas.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Open-Bio/openbio-comfy-mcp.git"
+  },
+  "homepage": "https://github.com/Open-Bio/openbio-comfy-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/Open-Bio/openbio-comfy-mcp/issues"
+  },
+  "keywords": [
+    "comfyui",
+    "mcp",
+    "model-context-protocol",
+    "openbio"
+  ],
   "type": "module",
   "bin": {
     "openbio-comfy-mcp": "./mcp_host/cli.mjs"
