@@ -40,6 +40,15 @@ async function startCatalogServer(t) {
   const server = createServer((request, response) => {
     requests.push({ method: request.method, url: request.url });
     response.setHeader("content-type", "application/json");
+    const prefix = "/object_info/";
+    if (request.url?.startsWith(prefix)) {
+      const classType = decodeURIComponent(request.url.slice(prefix.length));
+      const schema = objectInfo[classType];
+      response.end(JSON.stringify(schema === undefined ? {} : {
+        [classType]: schema,
+      }));
+      return;
+    }
     response.end(JSON.stringify(objectInfo));
   });
   server.listen(0, "127.0.0.1");
@@ -104,4 +113,42 @@ test("search_nodes finds every documented catalog field and returns a minimal sc
     catalog.requests,
     Array(6).fill({ method: "GET", url: "/object_info" }),
   );
+});
+
+test("inspect_node_type returns the complete native schema for an exact class type", async (t) => {
+  const catalog = await startCatalogServer(t);
+  const client = await connectClient(t, catalog.baseUrl);
+
+  const result = await client.callTool({
+    name: "inspect_node_type",
+    arguments: { class_type: "OpenBioLoadH5AD" },
+  });
+
+  assert.deepEqual(result.structuredContent, {
+    class_type: "OpenBioLoadH5AD",
+    schema: objectInfo.OpenBioLoadH5AD,
+  });
+  assert.deepEqual(catalog.requests, [{
+    method: "GET",
+    url: "/object_info/OpenBioLoadH5AD",
+  }]);
+});
+
+test("inspect_node_type reports an unknown class type", async (t) => {
+  const catalog = await startCatalogServer(t);
+  const client = await connectClient(t, catalog.baseUrl);
+
+  const result = await client.callTool({
+    name: "inspect_node_type",
+    arguments: { class_type: "MissingNode" },
+  });
+
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent, {
+    error: {
+      code: "NODE_TYPE_NOT_FOUND",
+      message: "ComfyUI node type is not installed: MissingNode.",
+      details: { class_type: "MissingNode" },
+    },
+  });
 });

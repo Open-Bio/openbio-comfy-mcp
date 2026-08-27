@@ -30,6 +30,10 @@ Accepts a canvas identity, native node or Group refs, `selection: "replace" | "a
 
 Searches ComfyUI's installed `/object_info` catalog by class type, display name, category, description, and input/output names. It returns the minimum schema needed to choose and connect a node.
 
+### `inspect_node_type`
+
+Accepts an exact installed `class_type`, queries ComfyUI's native `/object_info/{node_class}` endpoint, and returns that node type's complete schema without reading or modifying a live canvas. Unknown class types return `NODE_TYPE_NOT_FOUND`.
+
 ### `apply_canvas_patch`
 
 Accepts a canvas identity, the revision returned by `inspect_canvas`, and a non-empty ordered batch of typed operations:

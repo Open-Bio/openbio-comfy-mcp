@@ -81,6 +81,7 @@ Restart the Codex client after adding the server. Codex Desktop, CLI, and the ID
 - `inspect_canvas`: without `refs`, reads a compact topology and geometry snapshot of the exact connected canvas; with native refs such as `{"kind":"node","id":"31"}` or `{"kind":"group","id":"6"}`, reads edit-relevant details only for those items.
 - `present_canvas`: replaces or extends the native node/Group selection and can fit the view to it without changing the workflow, revision, or undo history.
 - `search_nodes`: searches the installed ComfyUI `/object_info` catalog and returns a compact connection schema.
+- `inspect_node_type`: accepts an exact `class_type` and returns its complete native ComfyUI schema, including input options such as defaults, ranges, and `forceInput`.
 - `apply_canvas_patch`: applies one non-empty ordered node, link, or group batch as one native undo transaction. Group operations are `add_group`, `update_group`, `move_group`, `fit_group_to_nodes`, and `remove_group` in addition to the existing node and link operations.
 
 Groups use ComfyUI's native `LGraphGroup`. Their serialized fields are `id`, `title`, `bounding`, `color`, and `flags`; membership is derived geometrically and is not stored as a node-ID list. `update_group.bounding` changes only the group rectangle, `fit_group_to_nodes` resizes that rectangle around explicitly named nodes without moving them, and `move_group` moves the Group and its native contents as a unit. Added groups can be referenced later in the same patch by `temp_ref`, and successful patches return `group_id_map` and changed node/Group IDs.
@@ -90,9 +91,10 @@ The expected editing flow is:
 1. Inspect the live canvas.
 2. Inspect specific native node or group refs when their widget, slot, color, flag, or geometric-membership details are needed.
 3. Search for any node types needed by the change.
-4. Apply one patch with the returned `canvas_id` and `revision` as `base_revision`.
-5. Optionally pass the returned changed IDs to `present_canvas` to select and focus the result.
-6. Inspect again, or use ComfyUI's native undo if the change is not wanted.
+4. Inspect the exact node types whose complete parameter metadata is needed.
+5. Apply one patch with the returned `canvas_id` and `revision` as `base_revision`.
+6. Optionally pass the returned changed IDs to `present_canvas` to select and focus the result.
+7. Inspect again, or use ComfyUI's native undo if the change is not wanted.
 
 Only one lightweight revision comparison is made immediately before writing. A stale patch does not write and must be rebuilt from a fresh inspection.
 Before the native transaction starts, the bridge validates the patch container and operation discriminators, then resolves node types, references, widgets, slots, protected removals, and connection types without invoking widget callbacks or changing the live graph.

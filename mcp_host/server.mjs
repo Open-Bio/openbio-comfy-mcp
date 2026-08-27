@@ -5,7 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { McpHostError, unavailableError } from "./errors.mjs";
-import { searchNodes } from "./search_nodes.mjs";
+import { inspectNodeType, searchNodes } from "./search_nodes.mjs";
 
 const NODE_REFERENCE_SCHEMA = { type: ["string", "integer"] };
 const CANVAS_REFERENCE_SCHEMA = {
@@ -223,6 +223,19 @@ const TOOL_DEFINITIONS = [
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   {
+    name: "inspect_node_type",
+    description: "Inspect the complete native ComfyUI schema for one installed node type.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        class_type: { type: "string", minLength: 1 },
+      },
+      required: ["class_type"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  {
     name: "apply_canvas_patch",
     description: "Apply one atomic, undoable batch of changes to a live ComfyUI canvas.",
     inputSchema: {
@@ -311,7 +324,7 @@ export function createMcpServer({
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to change only the live selection or viewport. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to change only the live selection or viewport. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
     },
   );
 
@@ -330,6 +343,10 @@ export function createMcpServer({
       }
       if (name === "search_nodes") {
         const value = await searchNodes(arguments_, { baseUrl, fetchImpl });
+        return toolResult(value);
+      }
+      if (name === "inspect_node_type") {
+        const value = await inspectNodeType(arguments_, { baseUrl, fetchImpl });
         return toolResult(value);
       }
       if (name === "apply_canvas_patch") {

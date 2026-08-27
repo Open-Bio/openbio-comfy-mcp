@@ -91,3 +91,51 @@ export async function searchNodes({ query, limit = 20 }, {
     .map(([classType, schema]) => minimalNode(classType, schema));
   return { nodes };
 }
+
+export async function inspectNodeType({ class_type: classType }, {
+  baseUrl,
+  fetchImpl = globalThis.fetch,
+}) {
+  const endpoint = `/object_info/${encodeURIComponent(classType)}`;
+  const url = `${baseUrl.replace(/\/$/, "")}${endpoint}`;
+  let response;
+  try {
+    response = await fetchImpl(url);
+  } catch (error) {
+    throw unavailableError(baseUrl, error);
+  }
+  if (!response.ok) {
+    throw new McpHostError(
+      "COMFYUI_HTTP_ERROR",
+      `ComfyUI returned HTTP ${response.status} for ${endpoint}.`,
+      { status: response.status },
+    );
+  }
+  let objectInfo;
+  try {
+    objectInfo = await response.json();
+  } catch (error) {
+    throw new McpHostError(
+      "COMFYUI_INVALID_RESPONSE",
+      `ComfyUI returned invalid JSON for ${endpoint}.`,
+      { cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  if (objectInfo === null || typeof objectInfo !== "object" || Array.isArray(objectInfo)) {
+    throw new McpHostError(
+      "COMFYUI_INVALID_RESPONSE",
+      "ComfyUI returned an invalid node schema response.",
+    );
+  }
+  if (!Object.hasOwn(objectInfo, classType)) {
+    throw new McpHostError(
+      "NODE_TYPE_NOT_FOUND",
+      `ComfyUI node type is not installed: ${classType}.`,
+      { class_type: classType },
+    );
+  }
+  return {
+    class_type: classType,
+    schema: objectInfo[classType],
+  };
+}
