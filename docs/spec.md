@@ -28,7 +28,7 @@ Searches ComfyUI's installed `/object_info` catalog by class type, display name,
 
 ### `apply_canvas_patch`
 
-Accepts a canvas identity, the revision returned by `inspect_canvas`, and an ordered batch of typed operations:
+Accepts a canvas identity, the revision returned by `inspect_canvas`, and a non-empty ordered batch of typed operations:
 
 - `add_node`
 - `remove_node`
@@ -41,7 +41,7 @@ Accepts a canvas identity, the revision returned by `inspect_canvas`, and an ord
 - `fit_group_to_nodes`
 - `remove_group`
 
-New nodes and groups can be referenced later in the same patch by `temp_ref`. Group operations use ComfyUI's native `LGraphGroup`; `update_group.bounding` changes only the group rectangle, while `fit_group_to_nodes` resizes it around explicit nodes without moving them. Group membership remains ComfyUI's derived geometric state rather than a persisted node-ID list. The page applies the whole patch as one native ComfyUI transaction. A stale revision or invalid operation performs no write; an unexpected write failure restores the prior graph. A successful patch returns the new revision and resolved node and group IDs.
+New nodes and groups can be referenced later in the same patch by `temp_ref`. Group operations use ComfyUI's native `LGraphGroup`; `update_group.bounding` changes only the group rectangle, while `fit_group_to_nodes` resizes it around explicit nodes without moving them. Group membership remains ComfyUI's derived geometric state rather than a persisted node-ID list. The page validates the patch container, non-empty operation list, and each operation discriminator before opening a native transaction. It applies the whole patch as one native ComfyUI transaction. A stale revision or invalid operation performs no write; an unexpected write failure restores the prior graph. A successful patch returns the new revision and resolved node and group IDs.
 
 ## Session and transport behavior
 
@@ -50,6 +50,7 @@ New nodes and groups can be referenced later in the same patch by `temp_ref`. Gr
 - With multiple connected pages, the focused page is selected; unresolved ambiguity is reported instead of guessed.
 - The plugin uses ComfyUI's existing HTTP/WebSocket server for relay traffic. The stdio MCP host opens no listening port.
 - Canvas-writing relay endpoints accept loopback requests only.
+- Malformed session, command, and reply envelopes return `INVALID_REQUEST` before changing relay state.
 - A disconnected page produces `NO_LIVE_CANVAS`; the system never falls back to editing a workflow file.
 
 ## Confirmed test seams

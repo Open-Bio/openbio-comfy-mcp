@@ -393,6 +393,106 @@ test("a stale revision is rejected before the native transaction starts", async 
   assert.deepEqual(calls, []);
 });
 
+test("an empty patch is rejected before the native transaction starts", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const before = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    liveCanvas.applyCanvasPatch({
+      canvas_id: inspected.canvas_id,
+      base_revision: inspected.revision,
+      operations: [],
+    }),
+    (error) => {
+      assert.equal(error.code, "invalid_patch");
+      assert.equal(error.message, "A canvas patch must contain at least one operation");
+      return true;
+    },
+  );
+
+  assert.deepEqual(graph.serialize(), before);
+  assert.deepEqual(calls, []);
+});
+
+test("a patch requires an operations array before the native transaction starts", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const before = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+  const patches = [
+    null,
+    { canvas_id: inspected.canvas_id, base_revision: inspected.revision },
+    { canvas_id: inspected.canvas_id, base_revision: inspected.revision, operations: null },
+    { canvas_id: inspected.canvas_id, base_revision: inspected.revision, operations: {} },
+  ];
+
+  for (const patch of patches) {
+    await assert.rejects(
+      liveCanvas.applyCanvasPatch(patch),
+      (error) => {
+        assert.equal(error.code, "invalid_patch");
+        assert.equal(error.message, "Canvas patch operations must be an array");
+        return true;
+      },
+    );
+  }
+
+  assert.deepEqual(graph.serialize(), before);
+  assert.deepEqual(calls, []);
+});
+
+test("every patch operation requires a non-empty string discriminant", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const before = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+  const invalidOperations = [null, [], {}, { op: null }, { op: "" }];
+
+  for (const operation of invalidOperations) {
+    await assert.rejects(
+      liveCanvas.applyCanvasPatch({
+        canvas_id: inspected.canvas_id,
+        base_revision: inspected.revision,
+        operations: [operation],
+      }),
+      (error) => {
+        assert.equal(error.code, "invalid_patch");
+        assert.equal(error.message, "Each canvas patch operation must have a non-empty string op");
+        assert.deepEqual(error.details, { operation_index: 0 });
+        return true;
+      },
+    );
+  }
+
+  assert.deepEqual(graph.serialize(), before);
+  assert.deepEqual(calls, []);
+});
+
+test("an unknown patch operation is rejected before the native transaction starts", async () => {
+  const { app, graph, LiteGraph, calls } = createCanvasFixture();
+  const before = graph.serialize();
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    liveCanvas.applyCanvasPatch({
+      canvas_id: inspected.canvas_id,
+      base_revision: inspected.revision,
+      operations: [{ op: "future_operation" }],
+    }),
+    (error) => {
+      assert.equal(error.code, "unsupported_operation");
+      assert.deepEqual(error.details, { operation: "future_operation" });
+      return true;
+    },
+  );
+
+  assert.deepEqual(graph.serialize(), before);
+  assert.deepEqual(calls, []);
+});
+
 test("a graph before-change failure closes the canvas transaction", async () => {
   const { app, canvas, graph, existing, LiteGraph, calls } = createCanvasFixture();
   const before = graph.serialize();

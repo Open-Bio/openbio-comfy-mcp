@@ -191,7 +191,7 @@ test("apply failures are returned to MCP without reporting success", async () =>
       arguments: {
         canvas_id: "page-a:workflow-123:canvas-root",
         base_revision: "v1-stale",
-        operations: [],
+        operations: [{ op: "move_node", node_id: "7", pos: [60, 100] }],
       },
     },
   });

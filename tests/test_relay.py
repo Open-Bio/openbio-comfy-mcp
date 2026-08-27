@@ -8,6 +8,25 @@ from openbio_comfy_mcp.relay import COMMAND_EVENT, Relay, RelayError
 from openbio_comfy_mcp.routes import RelayAPI
 
 
+def _relay_app(relay: Relay, *, command_timeout: float = 10.0) -> web.Application:
+    routes = web.RouteTableDef()
+    RelayAPI(relay, command_timeout=command_timeout).register(routes)
+    app = web.Application()
+    app.add_routes(routes)
+    return app
+
+
+async def _assert_invalid_request(response, message: str) -> None:
+    assert response.status == 400
+    assert await response.json() == {
+        "ok": False,
+        "error": {
+            "code": "INVALID_REQUEST",
+            "message": message,
+        },
+    }
+
+
 def test_single_registered_page_receives_a_correlated_command_and_reply():
     sent = []
     relay = Relay(send_event=lambda event, data, sid: sent.append((event, data, sid)))
@@ -364,11 +383,7 @@ def test_command_timeout_has_a_stable_relay_error():
 def test_http_routes_register_dispatch_and_accept_a_page_reply():
     sent = []
     relay = Relay(send_event=lambda event, data, sid: sent.append((data, sid)))
-    api = RelayAPI(relay, command_timeout=0.1)
-    routes = web.RouteTableDef()
-    api.register(routes)
-    app = web.Application()
-    app.add_routes(routes)
+    app = _relay_app(relay, command_timeout=0.1)
 
     async def exercise():
         async with TestClient(TestServer(app)) as client:
@@ -417,6 +432,265 @@ def test_http_routes_register_dispatch_and_accept_a_page_reply():
                 "ok": True,
                 "result": {"revision": "1"},
             }
+
+    asyncio.run(exercise())
+
+
+def test_session_route_rejects_invalid_envelopes_without_registering_a_canvas():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+    valid = {
+        "page_id": "page-a",
+        "client_id": "client-a",
+        "canvas_id": "canvas-a",
+        "workflow_id": "workflow-a",
+        "focused": True,
+        "href": "http://127.0.0.1:8188/#a",
+    }
+    invalid_bodies = [
+        [],
+        {**valid, "page_id": 7},
+        {**valid, "page_id": ""},
+        {**valid, "client_id": []},
+        {**valid, "canvas_id": None},
+        {**valid, "workflow_id": 7},
+        {**valid, "focused": "true"},
+        {**valid, "href": 7},
+    ]
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            for body in invalid_bodies:
+                response = await client.post("/openbio-comfy-mcp/session", json=body)
+                await _assert_invalid_request(
+                    response,
+                    "Session registration is missing required fields.",
+                )
+
+            response = await client.post(
+                "/openbio-comfy-mcp/command",
+                json={"command": "inspect_canvas", "arguments": {}},
+            )
+            assert response.status == 409
+            assert (await response.json())["error"]["code"] == "NO_LIVE_CANVAS"
+
+    asyncio.run(exercise())
+
+
+def test_relay_routes_reject_malformed_json_envelopes():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+    requests = [
+        ("/openbio-comfy-mcp/session", "Session registration is missing required fields."),
+        ("/openbio-comfy-mcp/command", "Command is missing required fields."),
+        ("/openbio-comfy-mcp/reply", "Reply is missing required fields."),
+    ]
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            for route, message in requests:
+                response = await client.post(
+                    route,
+                    data=b"{",
+                    headers={"Content-Type": "application/json"},
+                )
+                await _assert_invalid_request(response, message)
+
+    asyncio.run(exercise())
+
+
+def test_command_route_rejects_a_json_value_that_is_not_an_object():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/openbio-comfy-mcp/command", json=[])
+
+            await _assert_invalid_request(response, "Command is missing required fields.")
+
+    asyncio.run(exercise())
+
+
+def test_command_route_rejects_json_with_an_unknown_charset():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/openbio-comfy-mcp/command",
+                data=b"{}",
+                headers={"Content-Type": "application/json; charset=not-a-real-charset"},
+            )
+
+            await _assert_invalid_request(response, "Command is missing required fields.")
+
+    asyncio.run(exercise())
+
+
+def test_command_route_rejects_invalid_envelopes_before_selecting_a_canvas():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+    valid = {"canvas_id": "canvas-a", "command": "inspect_canvas", "arguments": {}}
+    invalid_bodies = [
+        {**valid, "canvas_id": 7},
+        {**valid, "canvas_id": ""},
+        {**valid, "command": None},
+        {**valid, "command": ""},
+        {**valid, "arguments": []},
+        {**valid, "arguments": None},
+    ]
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            for body in invalid_bodies:
+                response = await client.post("/openbio-comfy-mcp/command", json=body)
+                await _assert_invalid_request(response, "Command is missing required fields.")
+
+    asyncio.run(exercise())
+
+
+def test_command_route_does_not_misreport_relay_type_errors_as_invalid_requests():
+    def fail_to_send(event, data, sid):
+        raise TypeError("relay implementation failed")
+
+    relay = Relay(send_event=fail_to_send)
+    relay.register_session(
+        page_id="page-a",
+        client_id="client-a",
+        canvas_id="canvas-a",
+        workflow_id=None,
+        focused=True,
+        href=None,
+    )
+    app = _relay_app(relay)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/openbio-comfy-mcp/command",
+                json={"canvas_id": "canvas-a", "command": "inspect_canvas", "arguments": {}},
+            )
+            assert response.status == 500
+
+    asyncio.run(exercise())
+
+
+def test_reply_route_rejects_a_failure_without_an_error_envelope():
+    sent = []
+    relay = Relay(send_event=lambda event, data, sid: sent.append((data, sid)))
+    relay.register_session(
+        page_id="page-a",
+        client_id="client-a",
+        canvas_id="canvas-a",
+        workflow_id=None,
+        focused=True,
+        href=None,
+    )
+    app = _relay_app(relay, command_timeout=0.1)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            command_response = asyncio.create_task(
+                client.post(
+                    "/openbio-comfy-mcp/command",
+                    json={"canvas_id": "canvas-a", "command": "inspect_canvas", "arguments": {}},
+                )
+            )
+            while not sent:
+                await asyncio.sleep(0)
+            payload, _ = sent[0]
+
+            response = await client.post(
+                "/openbio-comfy-mcp/reply",
+                json={"page_id": "page-a", "request_id": payload["request_id"], "ok": False},
+            )
+
+            await _assert_invalid_request(response, "Reply is missing required fields.")
+            response = await client.post(
+                "/openbio-comfy-mcp/reply",
+                json={
+                    "page_id": "page-a",
+                    "request_id": payload["request_id"],
+                    "ok": False,
+                    "error": {
+                        "code": "canvas_failed",
+                        "message": "Canvas failed",
+                        "details": {"operation_index": 0},
+                    },
+                },
+            )
+            assert response.status == 200
+            assert await response.json() == {"ok": True}
+
+            command_error_response = await command_response
+            assert command_error_response.status == 409
+            assert await command_error_response.json() == {
+                "ok": False,
+                "error": {
+                    "code": "canvas_failed",
+                    "message": "Canvas failed",
+                    "details": {"operation_index": 0},
+                },
+            }
+
+    asyncio.run(exercise())
+
+
+def test_reply_route_requires_a_boolean_ok_field():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post(
+                "/openbio-comfy-mcp/reply",
+                json={"page_id": "page-a", "request_id": "request-a", "ok": "false"},
+            )
+
+            await _assert_invalid_request(response, "Reply is missing required fields.")
+
+    asyncio.run(exercise())
+
+
+def test_reply_route_rejects_a_json_value_that_is_not_an_object():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.post("/openbio-comfy-mcp/reply", json=[])
+
+            await _assert_invalid_request(response, "Reply is missing required fields.")
+
+    asyncio.run(exercise())
+
+
+def test_reply_route_rejects_invalid_envelopes_before_matching_a_request():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay)
+    valid = {"page_id": "page-a", "request_id": "request-a", "ok": True, "result": {}}
+    valid_error = {"code": "canvas_failed", "message": "Canvas failed"}
+    invalid_bodies = [
+        {**valid, "page_id": 7},
+        {**valid, "page_id": ""},
+        {**valid, "request_id": None},
+        {**valid, "request_id": ""},
+        {**valid, "ok": False, "error": []},
+        {**valid, "ok": False, "error": {}},
+        {**valid, "ok": False, "error": {**valid_error, "code": 7}},
+        {**valid, "ok": False, "error": {**valid_error, "code": ""}},
+        {**valid, "ok": False, "error": {**valid_error, "message": None}},
+        {**valid, "ok": False, "error": {**valid_error, "message": ""}},
+        {**valid, "ok": False, "error": {**valid_error, "details": []}},
+    ]
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            for body in invalid_bodies:
+                response = await client.post("/openbio-comfy-mcp/reply", json=body)
+                await _assert_invalid_request(response, "Reply is missing required fields.")
 
     asyncio.run(exercise())
 

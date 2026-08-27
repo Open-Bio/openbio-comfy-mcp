@@ -136,226 +136,250 @@ function updateGroup(group, operation) {
   if (Object.hasOwn(operation, "bounding")) group.recomputeInsideNodes();
 }
 
-function applyOperations(canvas, graph, operations, preparedNodes, preparedGroups) {
-  const idMap = {};
-  const groupIdMap = {};
-  const changedNodeIds = new Set();
-  const changedGroupIds = new Set();
-  let unpositionedNodes = 0;
-  for (const operation of operations) {
-    switch (operation.op) {
-      case "add_node": {
-        const node = preparedNodes[operation.temp_ref];
-        if (operation.pos) {
-          node.pos = clone(operation.pos);
-        } else {
-          const area = canvas.ds.visible_area ?? canvas.visible_area;
-          node.pos = [
-            area[0] + area[2] / 2 - node.size[0] / 2 + unpositionedNodes * 40,
-            area[1] + area[3] / 2 - node.size[1] / 2,
-          ];
-          unpositionedNodes += 1;
-        }
-        graph.add(node);
-        idMap[operation.temp_ref] = String(node.id);
-        changedNodeIds.add(String(node.id));
-        break;
-      }
-      case "add_group": {
-        const group = preparedGroups[operation.temp_ref];
-        if (operation.bounding) {
-          setGroupBounding(group, operation.bounding);
-        } else {
-          const area = canvas.ds.visible_area ?? canvas.visible_area;
-          group.pos = [
-            area[0] + area[2] / 2 - group.size[0] / 2,
-            area[1] + area[3] / 2 - group.size[1] / 2,
-          ];
-        }
-        if (Object.hasOwn(operation, "color")) group.color = operation.color;
-        if (Object.hasOwn(operation, "pinned")) group.pin(operation.pinned);
-        graph.add(group);
-        group.recomputeInsideNodes();
-        groupIdMap[operation.temp_ref] = String(group.id);
-        changedGroupIds.add(String(group.id));
-        break;
-      }
-      case "update_group": {
-        const group = resolveGroup(graph, operation.group_id, groupIdMap);
-        updateGroup(group, operation);
-        changedGroupIds.add(String(group.id));
-        break;
-      }
-      case "remove_group": {
-        const group = resolveGroup(graph, operation.group_id, groupIdMap);
-        changedGroupIds.add(String(group.id));
-        graph.remove(group);
-        if (graph.groups?.includes(group)) {
-          throw bridgeError("removal_rejected", `ComfyUI rejected removal of group: ${group.id}`, {
-            group_id: String(group.id),
-          });
-        }
-        break;
-      }
-      case "fit_group_to_nodes": {
-        const group = resolveGroup(graph, operation.group_id, groupIdMap);
-        const nodes = operation.node_ids.map((reference) => resolveNode(graph, reference, idMap));
-        group.resizeTo(nodes, operation.padding ?? 10);
-        group.recomputeInsideNodes();
-        changedGroupIds.add(String(group.id));
-        break;
-      }
-      case "remove_node": {
-        const node = resolveNode(graph, operation.node_id, idMap);
-        assertNodeRemovable(node);
-        changedNodeIds.add(String(node.id));
-        graph.remove(node);
-        if (graph.getNodeById(node.id)) {
-          throw bridgeError("removal_rejected", `ComfyUI rejected removal of node: ${node.id}`, {
-            node_id: String(node.id),
-          });
-        }
-        break;
-      }
-      case "set_input": {
-        const node = resolveNode(graph, operation.node_id, idMap);
-        changedNodeIds.add(String(node.id));
-        setInput(node, operation.input_name, operation.value);
-        break;
-      }
-      case "connect": {
-        const source = resolveNode(graph, operation.source, idMap);
-        const target = resolveNode(graph, operation.target, idMap);
-        if (!source.connect(operation.output_name, target, operation.input_name)) {
-          throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
-        }
-        changedNodeIds.add(String(source.id));
-        changedNodeIds.add(String(target.id));
-        break;
-      }
-      case "disconnect": {
-        const target = resolveNode(graph, operation.target, idMap);
-        inputSlot(target, operation.input_name);
-        changedNodeIds.add(String(target.id));
-        if (target.disconnectInput(operation.input_name) === false) {
-          throw bridgeError("connection_rejected", "ComfyUI rejected the requested disconnection");
-        }
-        break;
-      }
-      case "move_node": {
-        const node = resolveNode(graph, operation.node_id, idMap);
-        changedNodeIds.add(String(node.id));
-        node.pos = clone(operation.pos);
-        break;
-      }
-      default:
-        throw bridgeError("unsupported_operation", `Unsupported canvas operation: ${operation.op}`, {
-          operation: operation.op,
-        });
-    }
+function plannedNode(context, reference) {
+  const node = Object.hasOwn(context.preparedNodes, reference)
+    ? context.preparedNodes[reference]
+    : context.graph.getNodeById(reference);
+  if (!node || context.removedNodes.has(node)) {
+    throw bridgeError("node_not_found", `Node does not exist: ${reference}`, { reference });
   }
-  graph.setDirtyCanvas(true, true);
-  return {
-    idMap,
-    groupIdMap,
-    changedNodeIds: [...changedNodeIds].sort(),
-    changedGroupIds: [...changedGroupIds].sort(),
-  };
+  return node;
+}
+
+function plannedGroup(context, reference) {
+  const group = Object.hasOwn(context.preparedGroups, reference)
+    ? context.preparedGroups[reference]
+    : context.graph.groups?.find((candidate) => String(candidate.id) === String(reference));
+  if (!group || context.removedGroups.has(group)) {
+    throw bridgeError("group_not_found", `Group does not exist: ${reference}`, { reference });
+  }
+  return group;
+}
+
+function assertUniqueTempRef(context, tempRef) {
+  if (Object.hasOwn(context.preparedNodes, tempRef) || Object.hasOwn(context.preparedGroups, tempRef)) {
+    throw bridgeError("duplicate_temp_ref", `Duplicate temp_ref: ${tempRef}`);
+  }
+}
+
+const OPERATION_HANDLERS = new Map([
+  ["add_node", {
+    preflight(context, operation) {
+      assertUniqueTempRef(context, operation.temp_ref);
+      const node = context.LiteGraph.createNode(operation.class_type);
+      if (!node) {
+        throw bridgeError("node_type_not_found", `Node type is not installed: ${operation.class_type}`, {
+          class_type: operation.class_type,
+        });
+      }
+      context.preparedNodes[operation.temp_ref] = node;
+    },
+    apply(context, operation) {
+      const node = context.preparedNodes[operation.temp_ref];
+      if (operation.pos) {
+        node.pos = clone(operation.pos);
+      } else {
+        const area = context.canvas.ds.visible_area ?? context.canvas.visible_area;
+        node.pos = [
+          area[0] + area[2] / 2 - node.size[0] / 2 + context.unpositionedNodes * 40,
+          area[1] + area[3] / 2 - node.size[1] / 2,
+        ];
+        context.unpositionedNodes += 1;
+      }
+      context.graph.add(node);
+      context.idMap[operation.temp_ref] = String(node.id);
+      context.changedNodeIds.add(String(node.id));
+    },
+  }],
+  ["add_group", {
+    preflight(context, operation) {
+      assertUniqueTempRef(context, operation.temp_ref);
+      context.preparedGroups[operation.temp_ref] = new context.LiteGraph.LGraphGroup(operation.title);
+    },
+    apply(context, operation) {
+      const group = context.preparedGroups[operation.temp_ref];
+      if (operation.bounding) {
+        setGroupBounding(group, operation.bounding);
+      } else {
+        const area = context.canvas.ds.visible_area ?? context.canvas.visible_area;
+        group.pos = [
+          area[0] + area[2] / 2 - group.size[0] / 2,
+          area[1] + area[3] / 2 - group.size[1] / 2,
+        ];
+      }
+      if (Object.hasOwn(operation, "color")) group.color = operation.color;
+      if (Object.hasOwn(operation, "pinned")) group.pin(operation.pinned);
+      context.graph.add(group);
+      group.recomputeInsideNodes();
+      context.groupIdMap[operation.temp_ref] = String(group.id);
+      context.changedGroupIds.add(String(group.id));
+    },
+  }],
+  ["update_group", {
+    preflight(context, operation) {
+      plannedGroup(context, operation.group_id);
+    },
+    apply(context, operation) {
+      const group = resolveGroup(context.graph, operation.group_id, context.groupIdMap);
+      updateGroup(group, operation);
+      context.changedGroupIds.add(String(group.id));
+    },
+  }],
+  ["remove_group", {
+    preflight(context, operation) {
+      context.removedGroups.add(plannedGroup(context, operation.group_id));
+    },
+    apply(context, operation) {
+      const group = resolveGroup(context.graph, operation.group_id, context.groupIdMap);
+      context.changedGroupIds.add(String(group.id));
+      context.graph.remove(group);
+      if (context.graph.groups?.includes(group)) {
+        throw bridgeError("removal_rejected", `ComfyUI rejected removal of group: ${group.id}`, {
+          group_id: String(group.id),
+        });
+      }
+    },
+  }],
+  ["fit_group_to_nodes", {
+    preflight(context, operation) {
+      plannedGroup(context, operation.group_id);
+      for (const reference of operation.node_ids) plannedNode(context, reference);
+    },
+    apply(context, operation) {
+      const group = resolveGroup(context.graph, operation.group_id, context.groupIdMap);
+      const nodes = operation.node_ids.map(
+        (reference) => resolveNode(context.graph, reference, context.idMap),
+      );
+      group.resizeTo(nodes, operation.padding ?? 10);
+      group.recomputeInsideNodes();
+      context.changedGroupIds.add(String(group.id));
+    },
+  }],
+  ["remove_node", {
+    preflight(context, operation) {
+      const node = plannedNode(context, operation.node_id);
+      assertNodeRemovable(node);
+      context.removedNodes.add(node);
+    },
+    apply(context, operation) {
+      const node = resolveNode(context.graph, operation.node_id, context.idMap);
+      assertNodeRemovable(node);
+      context.changedNodeIds.add(String(node.id));
+      context.graph.remove(node);
+      if (context.graph.getNodeById(node.id)) {
+        throw bridgeError("removal_rejected", `ComfyUI rejected removal of node: ${node.id}`, {
+          node_id: String(node.id),
+        });
+      }
+    },
+  }],
+  ["set_input", {
+    preflight(context, operation) {
+      inputWidget(plannedNode(context, operation.node_id), operation.input_name);
+    },
+    apply(context, operation) {
+      const node = resolveNode(context.graph, operation.node_id, context.idMap);
+      context.changedNodeIds.add(String(node.id));
+      setInput(node, operation.input_name, operation.value);
+    },
+  }],
+  ["connect", {
+    preflight(context, operation) {
+      const source = plannedNode(context, operation.source);
+      const target = plannedNode(context, operation.target);
+      const output = outputSlot(source, operation.output_name);
+      const input = inputSlot(target, operation.input_name);
+      if (source === target || context.LiteGraph.isValidConnection?.(output.type, input.type) === false) {
+        throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
+      }
+    },
+    apply(context, operation) {
+      const source = resolveNode(context.graph, operation.source, context.idMap);
+      const target = resolveNode(context.graph, operation.target, context.idMap);
+      if (!source.connect(operation.output_name, target, operation.input_name)) {
+        throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
+      }
+      context.changedNodeIds.add(String(source.id));
+      context.changedNodeIds.add(String(target.id));
+    },
+  }],
+  ["disconnect", {
+    preflight(context, operation) {
+      inputSlot(plannedNode(context, operation.target), operation.input_name);
+    },
+    apply(context, operation) {
+      const target = resolveNode(context.graph, operation.target, context.idMap);
+      inputSlot(target, operation.input_name);
+      context.changedNodeIds.add(String(target.id));
+      if (target.disconnectInput(operation.input_name) === false) {
+        throw bridgeError("connection_rejected", "ComfyUI rejected the requested disconnection");
+      }
+    },
+  }],
+  ["move_node", {
+    preflight(context, operation) {
+      plannedNode(context, operation.node_id);
+    },
+    apply(context, operation) {
+      const node = resolveNode(context.graph, operation.node_id, context.idMap);
+      context.changedNodeIds.add(String(node.id));
+      node.pos = clone(operation.pos);
+    },
+  }],
+]);
+
+function operationHandler(operation) {
+  const handler = OPERATION_HANDLERS.get(operation.op);
+  if (!handler) {
+    throw bridgeError("unsupported_operation", `Unsupported canvas operation: ${operation.op}`, {
+      operation: operation.op,
+    });
+  }
+  return handler;
 }
 
 function preflightOperations(graph, LiteGraph, operations) {
-  const preparedNodes = {};
-  const preparedGroups = {};
-  const removedNodes = new Set();
-  const removedGroups = new Set();
-
-  function plannedNode(reference) {
-    const node = Object.hasOwn(preparedNodes, reference)
-      ? preparedNodes[reference]
-      : graph.getNodeById(reference);
-    if (!node || removedNodes.has(node)) {
-      throw bridgeError("node_not_found", `Node does not exist: ${reference}`, { reference });
-    }
-    return node;
-  }
-
-  function plannedGroup(reference) {
-    const group = Object.hasOwn(preparedGroups, reference)
-      ? preparedGroups[reference]
-      : graph.groups?.find((candidate) => String(candidate.id) === String(reference));
-    if (!group || removedGroups.has(group)) {
-      throw bridgeError("group_not_found", `Group does not exist: ${reference}`, { reference });
-    }
-    return group;
-  }
-
-  function assertUniqueTempRef(tempRef) {
-    if (Object.hasOwn(preparedNodes, tempRef) || Object.hasOwn(preparedGroups, tempRef)) {
-      throw bridgeError("duplicate_temp_ref", `Duplicate temp_ref: ${tempRef}`);
-    }
-  }
-
+  const context = {
+    graph,
+    LiteGraph,
+    preparedNodes: {},
+    preparedGroups: {},
+    removedNodes: new Set(),
+    removedGroups: new Set(),
+  };
+  const plan = [];
   for (const operation of operations) {
-    switch (operation.op) {
-      case "add_node": {
-        assertUniqueTempRef(operation.temp_ref);
-        const node = LiteGraph.createNode(operation.class_type);
-        if (!node) {
-          throw bridgeError("node_type_not_found", `Node type is not installed: ${operation.class_type}`, {
-            class_type: operation.class_type,
-          });
-        }
-        preparedNodes[operation.temp_ref] = node;
-        break;
-      }
-      case "add_group":
-        assertUniqueTempRef(operation.temp_ref);
-        preparedGroups[operation.temp_ref] = new LiteGraph.LGraphGroup(operation.title);
-        break;
-      case "update_group":
-        plannedGroup(operation.group_id);
-        break;
-      case "remove_group": {
-        const group = plannedGroup(operation.group_id);
-        removedGroups.add(group);
-        break;
-      }
-      case "fit_group_to_nodes":
-        plannedGroup(operation.group_id);
-        for (const reference of operation.node_ids) plannedNode(reference);
-        break;
-      case "remove_node": {
-        const node = plannedNode(operation.node_id);
-        assertNodeRemovable(node);
-        removedNodes.add(node);
-        break;
-      }
-      case "set_input":
-        inputWidget(plannedNode(operation.node_id), operation.input_name);
-        break;
-      case "connect": {
-        const source = plannedNode(operation.source);
-        const target = plannedNode(operation.target);
-        const output = outputSlot(source, operation.output_name);
-        const input = inputSlot(target, operation.input_name);
-        if (source === target || LiteGraph.isValidConnection?.(output.type, input.type) === false) {
-          throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
-        }
-        break;
-      }
-      case "disconnect":
-        inputSlot(plannedNode(operation.target), operation.input_name);
-        break;
-      case "move_node":
-        plannedNode(operation.node_id);
-        break;
-      default:
-        throw bridgeError("unsupported_operation", `Unsupported canvas operation: ${operation.op}`, {
-          operation: operation.op,
-        });
-    }
+    const handler = operationHandler(operation);
+    handler.preflight(context, operation);
+    plan.push({ handler, operation });
   }
-  return { preparedNodes, preparedGroups };
+  return {
+    plan,
+    preparedNodes: context.preparedNodes,
+    preparedGroups: context.preparedGroups,
+  };
+}
+
+function applyOperations(canvas, graph, plan, preparedNodes, preparedGroups) {
+  const context = {
+    canvas,
+    graph,
+    preparedNodes,
+    preparedGroups,
+    idMap: {},
+    groupIdMap: {},
+    changedNodeIds: new Set(),
+    changedGroupIds: new Set(),
+    unpositionedNodes: 0,
+  };
+  for (const { handler, operation } of plan) handler.apply(context, operation);
+  graph.setDirtyCanvas(true, true);
+  return {
+    idMap: context.idMap,
+    groupIdMap: context.groupIdMap,
+    changedNodeIds: [...context.changedNodeIds].sort(),
+    changedGroupIds: [...context.changedGroupIds].sort(),
+  };
 }
 
 function canonicalSelection(canvas, graph) {
@@ -533,6 +557,28 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
       ) {
         throw bridgeError("canvas_changed", "The active ComfyUI canvas changed; inspect it again");
       }
+      if (!Array.isArray(patch?.operations)) {
+        throw bridgeError("invalid_patch", "Canvas patch operations must be an array");
+      }
+      const { operations } = patch;
+      if (operations.length === 0) {
+        throw bridgeError("invalid_patch", "A canvas patch must contain at least one operation");
+      }
+      for (const [index, operation] of operations.entries()) {
+        if (
+          operation === null
+          || Array.isArray(operation)
+          || typeof operation !== "object"
+          || typeof operation.op !== "string"
+          || operation.op.length === 0
+        ) {
+          throw bridgeError(
+            "invalid_patch",
+            "Each canvas patch operation must have a non-empty string op",
+            { operation_index: index },
+          );
+        }
+      }
       if (patch.canvas_id !== identity.canvas_id) {
         throw bridgeError("canvas_mismatch", "The patch targets a different ComfyUI canvas", {
           expected: identity.canvas_id,
@@ -549,10 +595,10 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         });
       }
 
-      const { preparedNodes, preparedGroups } = preflightOperations(
+      const { plan, preparedNodes, preparedGroups } = preflightOperations(
         graph,
         LiteGraph,
-        patch.operations ?? [],
+        operations,
       );
 
       const changeTracker = workflow.changeTracker;
@@ -632,7 +678,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         applied = applyOperations(
           canvas,
           graph,
-          patch.operations ?? [],
+          plan,
           preparedNodes,
           preparedGroups,
         );

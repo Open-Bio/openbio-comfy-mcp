@@ -80,7 +80,7 @@ Restart the Codex client after adding the server. Codex Desktop, CLI, and the ID
 
 - `inspect_canvas`: without `refs`, reads a compact topology and geometry snapshot of the exact connected canvas; with native refs such as `{"kind":"node","id":"31"}` or `{"kind":"group","id":"6"}`, reads edit-relevant details only for those items.
 - `search_nodes`: searches the installed ComfyUI `/object_info` catalog and returns a compact connection schema.
-- `apply_canvas_patch`: applies one ordered node, link, or group batch as one native undo transaction. Group operations are `add_group`, `update_group`, `fit_group_to_nodes`, and `remove_group` in addition to the existing node and link operations.
+- `apply_canvas_patch`: applies one non-empty ordered node, link, or group batch as one native undo transaction. Group operations are `add_group`, `update_group`, `fit_group_to_nodes`, and `remove_group` in addition to the existing node and link operations.
 
 Groups use ComfyUI's native `LGraphGroup`. Their serialized fields are `id`, `title`, `bounding`, `color`, and `flags`; membership is derived geometrically and is not stored as a node-ID list. `update_group.bounding` changes only the group rectangle. `fit_group_to_nodes` resizes that rectangle around explicitly named nodes without moving them. Added groups can be referenced later in the same patch by `temp_ref`, and successful patches return `group_id_map` and `changed_group_ids`.
 
@@ -93,7 +93,7 @@ The expected editing flow is:
 5. Inspect again, or use ComfyUI's native undo if the change is not wanted.
 
 Only one lightweight revision comparison is made immediately before writing. A stale patch does not write and must be rebuilt from a fresh inspection.
-Before the native transaction starts, the bridge resolves node types, references, widgets, slots, protected removals, and connection types without invoking widget callbacks or changing the live graph.
+Before the native transaction starts, the bridge validates the patch container and operation discriminators, then resolves node types, references, widgets, slots, protected removals, and connection types without invoking widget callbacks or changing the live graph.
 
 ## Security and privacy
 
