@@ -81,9 +81,17 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
   const listed = await client.listTools();
   assert.deepEqual(
     listed.tools.map(({ name }) => name),
-    ["inspect_canvas", "present_canvas", "search_nodes", "inspect_node_type", "apply_canvas_patch"],
+    ["list_instances", "inspect_canvas", "present_canvas", "search_nodes", "inspect_node_type", "apply_canvas_patch"],
   );
+  const listInstancesTool = listed.tools.find(({ name }) => name === "list_instances");
+  assert.deepEqual(listInstancesTool.inputSchema, {
+    type: "object",
+    properties: {},
+    additionalProperties: false,
+  });
+  assert.deepEqual(listInstancesTool.annotations, { readOnlyHint: true, openWorldHint: false });
   const inspectTool = listed.tools.find(({ name }) => name === "inspect_canvas");
+  assert.equal(inspectTool.inputSchema.properties.instance_id.type, "string");
   assert.deepEqual(inspectTool.inputSchema.properties.refs, {
     type: "array",
     items: {
@@ -131,14 +139,14 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
     openWorldHint: false,
   });
   const inspectNodeTypeTool = listed.tools.find(({ name }) => name === "inspect_node_type");
-  assert.deepEqual(inspectNodeTypeTool.inputSchema, {
-    type: "object",
-    properties: {
-      class_type: { type: "string", minLength: 1 },
-    },
-    required: ["class_type"],
-    additionalProperties: false,
-  });
+  assert.deepEqual(inspectNodeTypeTool.inputSchema.properties.class_type, { type: "string", minLength: 1 });
+  assert.deepEqual(inspectNodeTypeTool.inputSchema.required, ["class_type"]);
+  assert.equal(inspectNodeTypeTool.inputSchema.additionalProperties, false);
+  for (const name of ["search_nodes", "inspect_node_type"]) {
+    const { inputSchema } = listed.tools.find((tool) => tool.name === name);
+    assert.equal(inputSchema.properties.instance_id.type, "string");
+    assert.equal(inputSchema.properties.canvas_id.type, "string");
+  }
   assert.deepEqual(inspectNodeTypeTool.annotations, {
     readOnlyHint: true,
     openWorldHint: false,
@@ -154,6 +162,7 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
 
   assert.equal(result.isError, undefined);
   assert.equal(result.structuredContent.canvas_id, "canvas-7");
+  assert.equal(result.structuredContent.instance_id, "configured");
   assert.deepEqual(received, {
     canvas_id: "canvas-7",
     command: "inspect_canvas",
@@ -200,6 +209,7 @@ test("present_canvas sends presentation state to the selected live canvas", asyn
 
   assert.equal(result.isError, undefined);
   assert.deepEqual(result.structuredContent, {
+    instance_id: "configured",
     canvas_id: "canvas-7",
     selection: [
       { kind: "node", id: "31" },
@@ -287,6 +297,7 @@ test("apply_canvas_patch sends one ordered patch to the selected live canvas", a
 
   assert.equal(result.isError, undefined);
   assert.deepEqual(result.structuredContent, {
+    instance_id: "configured",
     canvas_id: "canvas-7",
     revision: "rev-5",
     id_map: { load: 42 },

@@ -75,9 +75,12 @@ def _required_object(body: dict[str, Any], field: str) -> dict[str, Any]:
 
 
 class RelayAPI:
-    def __init__(self, relay: Relay, *, command_timeout: float = 10.0) -> None:
+    def __init__(
+        self, relay: Relay, *, command_timeout: float = 10.0, instance_id: str | None = None,
+    ) -> None:
         self._relay = relay
         self._command_timeout = command_timeout
+        self._instance_id = instance_id
 
     def register(self, routes: web.RouteTableDef) -> None:
         routes.post(SESSION_ROUTE)(self.session)
@@ -96,6 +99,12 @@ class RelayAPI:
             focused = body.get("focused", False)
             if not isinstance(focused, bool):
                 raise _InvalidRequest
+            last_focused_at = body.get("last_focused_at")
+            if last_focused_at is not None and (
+                type(last_focused_at) not in (int, float)
+                or not 0 <= last_focused_at < float("inf")
+            ):
+                raise _InvalidRequest
         except _InvalidRequest:
             return _error_response(
                 code="INVALID_REQUEST",
@@ -109,6 +118,7 @@ class RelayAPI:
             workflow_id=workflow_id,
             focused=focused,
             href=href,
+            last_focused_at=last_focused_at,
         )
         return web.json_response({"ok": True})
 
@@ -122,6 +132,7 @@ class RelayAPI:
         try:
             body = await _json_object(request)
             canvas_id = _required_string(body, "canvas_id") if "canvas_id" in body else None
+            instance_id = _required_string(body, "instance_id") if "instance_id" in body else None
             command = _required_string(body, "command")
             arguments = _required_object(body, "arguments")
         except _InvalidRequest:
@@ -129,6 +140,13 @@ class RelayAPI:
                 code="INVALID_REQUEST",
                 message="Command is missing required fields.",
                 status=400,
+            )
+        if instance_id is not None and instance_id != self._instance_id:
+            return _error_response(
+                code="INSTANCE_MISMATCH",
+                message="This ComfyUI process does not match the selected instance.",
+                status=409,
+                details={"instance_id": instance_id},
             )
         try:
             result = await self._relay.command(
@@ -145,7 +163,11 @@ class RelayAPI:
                 details=error.details,
                 status=status,
             )
-        return web.json_response({"ok": True, "result": result})
+        return web.json_response({
+            "ok": True,
+            "result": result,
+            **({"instance_id": self._instance_id} if self._instance_id is not None else {}),
+        })
 
     async def reply(self, request: web.Request) -> web.Response:
         try:
@@ -184,4 +206,10 @@ class RelayAPI:
         return web.json_response({"ok": True})
 
     async def health(self, request: web.Request) -> web.Response:
+        if self._instance_id is not None and is_loopback_address(request.remote):
+            return web.json_response({
+                "ok": True,
+                "instance_id": self._instance_id,
+                "canvases": self._relay.list_canvases(),
+            })
         return web.json_response({"ok": True})

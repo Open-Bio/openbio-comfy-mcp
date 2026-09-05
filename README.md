@@ -13,6 +13,7 @@ OpenBio Comfy MCP is a local [Model Context Protocol](https://modelcontextprotoc
 
 ## Features
 
+- Discover local ComfyUI instances on any port through one MCP connection.
 - Inspect the active canvas as compact, structured MCP output.
 - Search all node types installed in the connected ComfyUI instance.
 - Inspect the complete native schema of an exact node type.
@@ -92,7 +93,7 @@ Restart ComfyUI after installation, open its UI in a browser, and verify that th
 Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
 ```
 
-The expected response is `{ "ok": true }`.
+The response includes `"ok": true` and the running server's `instance_id`. Replace `8188` with your ComfyUI port when checking another instance.
 
 ### Sibling checkout for development
 
@@ -132,7 +133,6 @@ Register the local stdio server with an absolute path:
 $Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
 
 codex mcp add openbio-comfy-mcp `
-  --env OPENBIO_COMFY_URL=http://127.0.0.1:8188 `
   -- node "$Repo\dist\openbio-comfy-mcp.mjs"
 
 codex mcp get openbio-comfy-mcp --json
@@ -150,37 +150,48 @@ For hosts that use an `mcpServers` JSON configuration, adapt this example with a
   "mcpServers": {
     "openbio-comfy-mcp": {
       "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"],
-      "env": {
-        "OPENBIO_COMFY_URL": "http://127.0.0.1:8188"
-      }
+      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"]
     }
   }
 }
 ```
 
-Configuration keys vary by host. The command must start `dist/openbio-comfy-mcp.mjs`, and `OPENBIO_COMFY_URL` must point to the local ComfyUI server.
+Configuration keys vary by host. The command must start `dist/openbio-comfy-mcp.mjs`. Local instances are discovered automatically when `OPENBIO_COMFY_URL` is unset.
 
 ## Configuration
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `OPENBIO_COMFY_URL` | `http://127.0.0.1:8188` | Base URL of the ComfyUI server used by the local MCP server. |
+| `OPENBIO_COMFY_URL` | Unset (automatic discovery) | Set a local base URL, such as `http://127.0.0.1:8189`, to restrict this MCP connection to one instance. |
+| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | Shared registration directory. Set the same path for ComfyUI and the MCP host when overriding it. |
+
+### Local instances
+
+Install this extension in each ComfyUI instance and register the MCP server once. Each running backend registers its local address and an `instance_id` in the shared directory; instances running under the same operating-system user are discovered on any port. The MCP server checks their health before use. Discovery uses loopback addresses without port scanning; remote ComfyUI instances are not supported.
+
+Registration is refreshed every 5 seconds and removed on normal shutdown. Records older than 30 seconds are ignored. With no current registration records, the MCP server tries `http://127.0.0.1:8188` for compatibility with older extension versions. If your existing MCP configuration sets `OPENBIO_COMFY_URL`, remove that variable and reconnect to enable automatic discovery.
+
+Call `list_instances` to see each instance's `instance_id`, `base_url`, `status` (`online` or `unavailable`), connected `canvases`, and `last_focused_at`. With one online instance, tools select it automatically. With several and no explicit target, tools select the instance whose connected page was most recently focused. Switching back to chat preserves that time; heartbeats do not advance it. Focus times remain in memory only.
+
+You can also specify an instance in chat, for example “edit the workflow on port 8189.” The client uses `list_instances` to find its `instance_id` and passes that to `inspect_canvas`, or inspects a listed `canvas_id`. Explicit targets take priority. If no focus times are available or the latest time is tied across instances, tools return `AMBIGUOUS_INSTANCE` so the target can be specified.
+
+Inspection returns `instance_id`, `canvas_id`, and `revision`. Treat `canvas_id` as an opaque value and pass it back unchanged: it binds subsequent calls to that running instance, including after focus changes, subgraph navigation, or reconnecting the MCP host. Pass the same `canvas_id` to node catalog tools so searches use that instance's installed nodes. An unavailable or restarted target returns an error instead of switching to another instance; list and inspect again to obtain the new target's canvas identity.
 
 ## Tools
 
 | Tool | Effect | Purpose |
 | --- | --- | --- |
+| `list_instances` | Read-only | List local instances, their connection status, and connected canvases. |
 | `inspect_canvas` | Read-only | Inspect compact topology, subgraph navigation and ports, or details for exact native node/group refs. |
-| `search_nodes` | Read-only | Search the connected ComfyUI `/object_info` catalog. |
-| `inspect_node_type` | Read-only | Read the complete native schema for one exact `class_type`. |
+| `search_nodes` | Read-only | Search an instance's `/object_info` catalog, selected by `canvas_id` or `instance_id`. |
+| `inspect_node_type` | Read-only | Read one exact `class_type` schema from the instance selected by `canvas_id` or `instance_id`. |
 | `present_canvas` | UI state only | Navigate between native graphs, select and optionally fit their items. |
 | `apply_canvas_patch` | Writes the live canvas | Apply one atomic, undoable batch of typed node, link, group, or subgraph operations. |
 
 Recommended editing flow:
 
-1. Call `inspect_canvas` and keep the returned `canvas_id` and `revision`.
-2. Use `search_nodes` and `inspect_node_type` before adding an unfamiliar node type.
+1. Call `inspect_canvas` and keep the returned `instance_id`, `canvas_id`, and `revision`. To choose a specific instance, first use `list_instances` and pass its identity; otherwise the most recently focused instance is selected when unambiguous.
+2. Use `search_nodes` and `inspect_node_type` with that `canvas_id` before adding an unfamiliar node type.
 3. Send one `apply_canvas_patch` with the inspected `canvas_id` and `revision` as `base_revision`.
 4. Optionally call `present_canvas` to select and focus the changed items.
 5. Inspect again. If the result is unwanted, use ComfyUI's native undo command.
@@ -203,7 +214,7 @@ After installing or updating this repository, restart ComfyUI and reload the bro
 
 - Install MCP servers only from sources you trust. This local server runs with the same operating-system permissions as the MCP host application that launches it.
 - Treat `apply_canvas_patch` as a write-capable tool and review or approve its use in your MCP host. It changes the workflow currently open in the selected page, although the whole patch can be reverted with one native undo.
-- The stdio MCP server opens no network listener. It calls the configured ComfyUI HTTP server, which defaults to `http://127.0.0.1:8188`.
+- The stdio MCP server opens no network listener. It calls discovered or explicitly configured local ComfyUI HTTP servers.
 - Canvas command requests are accepted from loopback only. This restriction is not a general authentication layer for ComfyUI; do not expose an unauthenticated ComfyUI server to untrusted networks.
 - The bridge exposes typed graph operations, not arbitrary JavaScript, DOM access, filesystem access, shell commands, workflow queueing, or execution.
 - Canvas inspections can include workflow names, paths, node titles, prompts, filenames, sample identifiers, and widget values. Any onward handling follows the privacy policy and configuration of the MCP host and model provider you connect.
@@ -215,7 +226,11 @@ After installing or updating this repository, restart ComfyUI and reload the bro
 - Tools are missing in the host: verify the absolute `dist/openbio-comfy-mcp.mjs` path and restart the MCP host application. For a source checkout, run `npm ci` first.
 - Health endpoint is missing: verify the repository is directly under `custom_nodes` or linked there, then restart ComfyUI and inspect its console for import errors.
 - `STALE_CANVAS`: call `inspect_canvas` again and build a new patch from the returned revision.
-- Multiple pages are open: the most recently focused ComfyUI page is the default target; an unresolved ambiguity is reported instead of guessed.
+- `AMBIGUOUS_INSTANCE`: focus times are missing or tied across instances. Use `list_instances`, then pass the intended `instance_id` or listed `canvas_id` to `inspect_canvas`.
+- `INSTANCE_UNAVAILABLE` or `INSTANCE_NOT_FOUND`: the selected instance is unavailable or no longer registered. Use `list_instances` and inspect the intended running instance again; its previous `canvas_id` cannot target a restarted server.
+- `INSTANCE_MISMATCH`: the supplied instance and canvas identities disagree. Use the `instance_id` and `canvas_id` belonging to the same canvas in the listing or inspection.
+- An instance is missing: install the extension in that instance, restart it, and ensure ComfyUI and the MCP host use the same registration directory. Remove `OPENBIO_COMFY_URL` from the MCP configuration if it still fixes the target to one server.
+- Multiple pages are open in one instance: the most recently focused ComfyUI page is the default target within that instance; an unresolved ambiguity is reported instead of guessed.
 - Port `5173` development page does not connect: use a frontend served by the ComfyUI backend as described above.
 
 ## Update and uninstall

@@ -76,6 +76,7 @@ function createWebFixture(graphFixture = createCanvasFixture()) {
     eventListeners,
     windowListeners,
     canvasListeners,
+    documentRef,
     async workflowChanged() {
       await Promise.all([...workflowSubscribers].map((listener) => listener()));
     },
@@ -84,7 +85,8 @@ function createWebFixture(graphFixture = createCanvasFixture()) {
   };
 }
 
-test("web extension registers the visible page and answers inspect_canvas over ComfyUI events", async () => {
+test("web extension registers the visible page and answers inspect_canvas over ComfyUI events", async (t) => {
+  t.mock.method(Date, "now", () => 1_700_000_000_000);
   const fixture = createWebFixture();
   assert.equal(fixture.extension.name, EXTENSION_NAME);
 
@@ -99,6 +101,7 @@ test("web extension registers the visible page and answers inspect_canvas over C
       workflow_id: "workflow-123",
       canvas_id: "page-a:workflow-123:canvas-root",
       focused: true,
+      last_focused_at: 1_700_000_000_000,
       href: "http://127.0.0.1:8188/#workflow-123",
     },
   });
@@ -141,6 +144,64 @@ test("heartbeat, focus and ComfyUI reconnect refresh the native session", async 
   assert.equal(fixture.requests[0].body.focused, true);
   assert.equal(fixture.requests[1].body.focused, false);
   assert.equal(fixture.requests[2].body.client_id, "client-reconnected");
+});
+
+test("last focus survives returning to chat and changes only when the page regains focus", async (t) => {
+  let now = 1_700_000_000_000;
+  t.mock.method(Date, "now", () => now);
+  const fixture = createWebFixture();
+  await fixture.extension.setup();
+  const firstFocus = now;
+
+  now += 1_000;
+  await fixture.windowListeners.get("focus")();
+  await fixture.eventListeners.get("document:visibilitychange")();
+  fixture.setFocused(false);
+  await fixture.windowListeners.get("blur")();
+  now += 10_000;
+  await fixture.heartbeat();
+  await fixture.eventListeners.get("reconnected")();
+  fixture.app.extensionManager.workflow.activeWorkflow = {
+    path: "workflows/next.json",
+    changeTracker: { activeState: { id: "workflow-next" } },
+  };
+  await fixture.workflowChanged();
+  await fixture.canvasListeners.get("litegraph:set-graph")();
+  assert.ok(fixture.requests.every(({ body }) => body.last_focused_at === firstFocus));
+  assert.equal(fixture.requests.at(-1).body.focused, false);
+
+  fixture.documentRef.visibilityState = "hidden";
+  fixture.setFocused(true);
+  await fixture.windowListeners.get("focus")();
+  assert.equal(fixture.requests.at(-1).body.last_focused_at, firstFocus);
+  fixture.documentRef.visibilityState = "visible";
+  await fixture.eventListeners.get("document:visibilitychange")();
+  const secondFocus = now;
+  now += 1_000;
+  await fixture.windowListeners.get("focus")();
+  await fixture.heartbeat();
+  assert.equal(fixture.requests.at(-1).body.last_focused_at, secondFocus);
+  assert.equal(fixture.requests.at(-1).body.focused, true);
+});
+
+test("initial background pages report no focus until focused, even before the client connects", async (t) => {
+  let now = 1_700_000_000_000;
+  t.mock.method(Date, "now", () => now);
+  const fixture = createWebFixture();
+  fixture.setFocused(false);
+  await fixture.extension.setup();
+  assert.equal(fixture.requests[0].body.last_focused_at, null);
+
+  fixture.api.clientId = null;
+  fixture.setFocused(true);
+  await fixture.windowListeners.get("focus")();
+  fixture.setFocused(false);
+  await fixture.windowListeners.get("blur")();
+  now += 10_000;
+  fixture.api.clientId = "client-reconnected";
+  await fixture.eventListeners.get("reconnected")();
+  assert.equal(fixture.requests.at(-1).body.last_focused_at, 1_700_000_000_000);
+  assert.equal(fixture.requests.at(-1).body.focused, false);
 });
 
 test("the native set-graph event immediately registers the newly active workflow", async () => {

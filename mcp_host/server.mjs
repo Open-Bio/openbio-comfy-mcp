@@ -5,9 +5,15 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { McpHostError, unavailableError } from "./errors.mjs";
+import { createInstanceRouter } from "./instances.mjs";
 import { inspectNodeType, searchNodes } from "./search_nodes.mjs";
 
 const NODE_REFERENCE_SCHEMA = { type: ["string", "integer"] };
+const INSTANCE_ID_SCHEMA = {
+  type: "string",
+  minLength: 1,
+  description: "Local ComfyUI instance ID returned by list_instances or a previous inspection.",
+};
 const CANVAS_REFERENCE_SCHEMA = {
   type: "object",
   properties: {
@@ -230,11 +236,18 @@ const PATCH_OPERATION_SCHEMA = {
 
 const TOOL_DEFINITIONS = [
   {
+    name: "list_instances",
+    description: "Discover local ComfyUI instances, connection status, last focus times, and their active canvases.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  {
     name: "inspect_canvas",
     description: "Inspect a compact live ComfyUI canvas, subgraph navigation and ports, or details for native node and group refs.",
     inputSchema: {
       type: "object",
       properties: {
+        instance_id: INSTANCE_ID_SCHEMA,
         canvas_id: {
           type: "string",
           description: "Opaque canvas identity returned by an earlier inspection.",
@@ -283,6 +296,8 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
+        instance_id: INSTANCE_ID_SCHEMA,
+        canvas_id: { type: "string", description: "Use the instance that owns this inspected canvas." },
         query: { type: "string", minLength: 1 },
         limit: { type: "integer", minimum: 1, maximum: 50, default: 20 },
       },
@@ -297,6 +312,8 @@ const TOOL_DEFINITIONS = [
     inputSchema: {
       type: "object",
       properties: {
+        instance_id: INSTANCE_ID_SCHEMA,
+        canvas_id: { type: "string", description: "Use the instance that owns this inspected canvas." },
         class_type: { type: "string", minLength: 1 },
       },
       required: ["class_type"],
@@ -350,17 +367,21 @@ function commandUrl(baseUrl) {
   return `${baseUrl.replace(/\/$/, "")}/openbio-comfy-mcp/command`;
 }
 
-async function relayCommand(command, arguments_, { baseUrl, fetchImpl }) {
-  const { canvas_id } = arguments_;
+async function relayCommand(command, arguments_, { instance, router, fetchImpl }) {
+  const baseUrl = instance.base_url;
+  const { instance_id: _instanceId, ...canvasArguments } = arguments_;
+  const canvas_id = instance.native_canvas_id;
+  if (canvas_id !== undefined) canvasArguments.canvas_id = canvas_id;
   let response;
   try {
     response = await fetchImpl(commandUrl(baseUrl), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        ...(instance.expected_instance_id ? { instance_id: instance.expected_instance_id } : {}),
         ...(canvas_id === undefined ? {} : { canvas_id }),
         command,
-        arguments: arguments_,
+        arguments: canvasArguments,
       }),
     });
   } catch (error) {
@@ -382,18 +403,20 @@ async function relayCommand(command, arguments_, { baseUrl, fetchImpl }) {
       message: `ComfyUI returned HTTP ${response.status}.`,
     });
   }
-  return toolResult(body.result ?? body);
+  return toolResult(router.bindResult(instance, body.result ?? body, body.instance_id));
 }
 
 export function createMcpServer({
-  baseUrl = process.env.OPENBIO_COMFY_URL ?? "http://127.0.0.1:8188",
+  baseUrl = process.env.OPENBIO_COMFY_URL,
+  registryDir,
   fetchImpl = globalThis.fetch,
 } = {}) {
+  const router = createInstanceRouter({ baseUrl, registryDir, fetchImpl });
   const server = new Server(
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to navigate between live graphs or change selection and viewport; its optional graph_id accepts a node's subgraph_id or root_graph_id from inspection. Pass the current canvas_id and refs belonging to the destination graph, then use the returned canvas_id and inspect again after navigation. Native graph IDs are not installed class_type values. Read subgraph boundary node IDs and slot names from inspection and reuse connect/disconnect for boundary links. Subgraph edits affect the shared definition and all its instances. convert_to_subgraph and unpack_subgraph must be the last operation in a patch; inspect again afterward for remapped IDs. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to navigate between live graphs or change selection and viewport; its optional graph_id accepts a node's subgraph_id or root_graph_id from inspection. Pass the current canvas_id and refs belonging to the destination graph, then use the returned canvas_id and inspect again after navigation. Native graph IDs are not installed class_type values. Read subgraph boundary node IDs and slot names from inspection and reuse connect/disconnect for boundary links. Subgraph edits affect the shared definition and all its instances. convert_to_subgraph and unpack_subgraph must be the last operation in a patch; inspect again afterward for remapped IDs. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch. Use list_instances to discover local ComfyUI instances and their canvases. Without an explicit target, tools use the online instance with the most recent reported last_focused_at, even after focus returns to chat. If focus times are unavailable or tied, choose instance_id using list_instances. An explicit instance_id or canvas_id takes priority. Reuse the returned opaque canvas_id unchanged for all subsequent presentation and editing, including after navigation. Use that canvas_id with search_nodes and inspect_node_type to query the same instance. Canvas IDs include process identity: if an instance restarts, explicitly inspect the new instance; never retry a write on a different instance.",
     },
   );
 
@@ -404,22 +427,22 @@ export function createMcpServer({
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: arguments_ = {} } = request.params;
     try {
-      if (name === "inspect_canvas") {
-        return await relayCommand(name, arguments_, { baseUrl, fetchImpl });
+      if (name === "list_instances") {
+        return toolResult(await router.listInstances());
       }
-      if (name === "present_canvas") {
-        return await relayCommand(name, arguments_, { baseUrl, fetchImpl });
+      if (name === "inspect_canvas" || name === "present_canvas" || name === "apply_canvas_patch") {
+        const instance = await router.resolve(arguments_);
+        return await relayCommand(name, arguments_, { instance, router, fetchImpl });
       }
       if (name === "search_nodes") {
-        const value = await searchNodes(arguments_, { baseUrl, fetchImpl });
-        return toolResult(value);
+        const instance = await router.resolve(arguments_);
+        const value = await searchNodes(arguments_, { baseUrl: instance.base_url, fetchImpl });
+        return toolResult(router.bindResult(instance, value));
       }
       if (name === "inspect_node_type") {
-        const value = await inspectNodeType(arguments_, { baseUrl, fetchImpl });
-        return toolResult(value);
-      }
-      if (name === "apply_canvas_patch") {
-        return await relayCommand(name, arguments_, { baseUrl, fetchImpl });
+        const instance = await router.resolve(arguments_);
+        const value = await inspectNodeType(arguments_, { baseUrl: instance.base_url, fetchImpl });
+        return toolResult(router.bindResult(instance, value));
       }
     } catch (error) {
       if (error instanceof McpHostError) {

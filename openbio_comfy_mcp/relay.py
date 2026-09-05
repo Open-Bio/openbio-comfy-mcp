@@ -46,6 +46,7 @@ class _Session:
     focused: bool
     href: str | None
     last_seen: float
+    last_focused_at: int | float | None = None
 
 
 @dataclass(slots=True)
@@ -82,7 +83,11 @@ class Relay:
         workflow_id: str | None,
         focused: bool,
         href: str | None,
+        last_focused_at: int | float | None = None,
     ) -> None:
+        previous = self._sessions.get(page_id)
+        if previous is not None and previous.last_focused_at is not None:
+            last_focused_at = max(previous.last_focused_at, last_focused_at or 0)
         self._sessions[page_id] = _Session(
             page_id=page_id,
             client_id=client_id,
@@ -91,6 +96,7 @@ class Relay:
             focused=focused,
             href=href,
             last_seen=self._clock(),
+            last_focused_at=last_focused_at,
         )
         if focused:
             self._last_focused_page_id = page_id
@@ -129,7 +135,7 @@ class Relay:
         finally:
             self._pending.pop(request_id, None)
 
-    def _select_session(self, canvas_id: str | None) -> _Session:
+    def _prune_sessions(self) -> None:
         now = self._clock()
         self._sessions = {
             page_id: session
@@ -137,6 +143,23 @@ class Relay:
             if now - session.last_seen <= self._session_ttl
             and self._is_client_connected(session.client_id)
         }
+
+    def list_canvases(self) -> list[dict[str, Any]]:
+        self._prune_sessions()
+        return [
+            {
+                "canvas_id": session.canvas_id,
+                "page_id": session.page_id,
+                "workflow_id": session.workflow_id,
+                "focused": session.focused,
+                "last_focused_at": session.last_focused_at,
+                "href": session.href,
+            }
+            for session in self._sessions.values()
+        ]
+
+    def _select_session(self, canvas_id: str | None) -> _Session:
+        self._prune_sessions()
         if canvas_id is not None:
             matches = [
                 session

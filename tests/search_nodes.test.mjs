@@ -89,6 +89,7 @@ test("search_nodes finds every documented catalog field and returns a minimal sc
       arguments: { query },
     });
     assert.deepEqual(result.structuredContent, {
+      instance_id: "configured",
       nodes: [{
         class_type: "OpenBioLoadH5AD",
         display_name: "Load H5AD",
@@ -125,6 +126,7 @@ test("inspect_node_type returns the complete native schema for an exact class ty
   });
 
   assert.deepEqual(result.structuredContent, {
+    instance_id: "configured",
     class_type: "OpenBioLoadH5AD",
     schema: objectInfo.OpenBioLoadH5AD,
   });

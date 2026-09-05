@@ -8,9 +8,11 @@ from openbio_comfy_mcp.relay import COMMAND_EVENT, Relay, RelayError
 from openbio_comfy_mcp.routes import RelayAPI
 
 
-def _relay_app(relay: Relay, *, command_timeout: float = 10.0) -> web.Application:
+def _relay_app(
+    relay: Relay, *, command_timeout: float = 10.0, instance_id: str | None = None,
+) -> web.Application:
     routes = web.RouteTableDef()
-    RelayAPI(relay, command_timeout=command_timeout).register(routes)
+    RelayAPI(relay, command_timeout=command_timeout, instance_id=instance_id).register(routes)
     app = web.Application()
     app.add_routes(routes)
     return app
@@ -493,6 +495,10 @@ def test_session_route_rejects_invalid_envelopes_without_registering_a_canvas():
         {**valid, "canvas_id": None},
         {**valid, "workflow_id": 7},
         {**valid, "focused": "true"},
+        *[
+            {**valid, "last_focused_at": value}
+            for value in (True, "123", -1, float("nan"), float("inf"))
+        ],
         {**valid, "href": 7},
     ]
 
@@ -574,6 +580,8 @@ def test_command_route_rejects_invalid_envelopes_before_selecting_a_canvas():
     invalid_bodies = [
         {**valid, "canvas_id": 7},
         {**valid, "canvas_id": ""},
+        {**valid, "instance_id": 7},
+        {**valid, "instance_id": ""},
         {**valid, "command": None},
         {**valid, "command": ""},
         {**valid, "arguments": []},
@@ -749,3 +757,116 @@ def test_command_route_rejects_non_loopback_callers():
             "message": "Canvas commands are accepted from loopback only.",
         },
     }
+
+
+def test_health_exposes_only_live_canvases_to_loopback_callers():
+    now = [0.0]
+    connected = {"client-live", "client-expired"}
+    relay = Relay(
+        send_event=lambda event, data, sid: None,
+        clock=lambda: now[0],
+        is_client_connected=lambda client_id: client_id in connected,
+    )
+    for suffix in ("expired", "closed", "live"):
+        if suffix != "expired":
+            now[0] = 16.0
+        relay.register_session(
+            page_id=f"page-{suffix}",
+            client_id=f"client-{suffix}",
+            canvas_id=f"canvas-{suffix}",
+            workflow_id="workflow-a",
+            focused=True,
+            href="http://127.0.0.1:8189/#a",
+        )
+    api = RelayAPI(relay, instance_id="instance-a")
+
+    class Request:
+        remote = "127.0.0.1"
+
+    response = asyncio.run(api.health(Request()))
+    assert json.loads(response.text) == {
+        "ok": True,
+        "instance_id": "instance-a",
+        "canvases": [{
+            "canvas_id": "canvas-live",
+            "page_id": "page-live",
+            "workflow_id": "workflow-a",
+            "focused": True,
+            "last_focused_at": None,
+            "href": "http://127.0.0.1:8189/#a",
+        }],
+    }
+    Request.remote = "192.0.2.10"
+    response = asyncio.run(api.health(Request()))
+    assert json.loads(response.text) == {"ok": True}
+
+
+def test_session_route_preserves_reported_focus_time_in_health_after_blur_and_heartbeat():
+    relay = Relay(send_event=lambda event, data, sid: None)
+    app = _relay_app(relay, instance_id="instance-a")
+    registration = {
+        "page_id": "page-a",
+        "client_id": "client-a",
+        "canvas_id": "canvas-a",
+    }
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            for focused, last_focused_at in (
+                (False, None),
+                (True, 1_700_000_000_000),
+                (False, 1_700_000_000_000),
+                (False, 1_700_000_000_000),
+                (True, 1_700_000_010_000.5),
+            ):
+                response = await client.post(
+                    "/openbio-comfy-mcp/session",
+                    json={
+                        **registration,
+                        "focused": focused,
+                        "last_focused_at": last_focused_at,
+                    },
+                )
+                assert response.status == 200
+                response = await client.get("/openbio-comfy-mcp/health")
+                canvas = (await response.json())["canvases"][0]
+                assert canvas["focused"] is focused
+                assert canvas["last_focused_at"] == last_focused_at
+
+            response = await client.post(
+                "/openbio-comfy-mcp/session",
+                json={
+                    **registration,
+                    "focused": False,
+                    "last_focused_at": 1_700_000_000_000,
+                },
+            )
+            assert response.status == 200
+            response = await client.get("/openbio-comfy-mcp/health")
+            canvas = (await response.json())["canvases"][0]
+            assert canvas["focused"] is False
+            assert canvas["last_focused_at"] == 1_700_000_010_000.5
+
+    asyncio.run(exercise())
+
+
+def test_command_rejects_reused_port_identity_before_dispatch():
+    sent = []
+    relay = Relay(send_event=lambda event, data, sid: sent.append(data))
+    api = RelayAPI(relay, instance_id="instance-new")
+
+    class Request:
+        remote = "127.0.0.1"
+
+        async def json(self):
+            return {
+                "instance_id": "instance-old",
+                "canvas_id": "canvas-a",
+                "command": "apply_canvas_patch",
+                "arguments": {},
+            }
+
+    response = asyncio.run(api.command(Request()))
+    assert response.status == 409
+    assert json.loads(response.text)["error"]["code"] == "INSTANCE_MISMATCH"
+    assert sent == []

@@ -6,6 +6,8 @@ import sys
 import types
 from pathlib import Path
 
+from aiohttp import web
+
 
 def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_nodes(
     monkeypatch,
@@ -38,6 +40,7 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
 
     class ServerInstance:
         def __init__(self):
+            self.app = web.Application()
             self.routes = Routes()
             self.events = []
             self.sockets = {"client-a": object()}
@@ -48,6 +51,7 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
     server_instance = ServerInstance()
     server_module = types.ModuleType("server")
     server_module.PromptServer = types.SimpleNamespace(instance=server_instance)
+    server_module.args = types.SimpleNamespace(tls_keyfile=None, tls_certfile=None)
     monkeypatch.setitem(sys.modules, "server", server_module)
     sys.modules.pop("openbio_comfy_mcp.extension", None)
     extension_module = importlib.import_module("openbio_comfy_mcp.extension")
@@ -65,6 +69,15 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
         extension = extension_module.OpenBioComfyMcpExtension()
         await extension.on_load()
         assert await extension.get_node_list() == []
+        assert len(server_instance.app.cleanup_ctx) == 1
+        health = await server_instance.routes.handlers[
+            ("GET", "/openbio-comfy-mcp/health")
+        ](Request({}))
+        assert json.loads(health.text) == {
+            "ok": True,
+            "instance_id": extension._registration.instance_id,
+            "canvases": [],
+        }
         assert set(server_instance.routes.handlers) == {
             ("POST", "/openbio-comfy-mcp/session"),
             ("POST", "/openbio-comfy-mcp/command"),
@@ -92,6 +105,7 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
             ](
                 Request(
                     {
+                        "instance_id": extension._registration.instance_id,
                         "canvas_id": "canvas-a",
                         "command": "inspect_canvas",
                         "arguments": {},
@@ -121,6 +135,7 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
         assert json.loads(response.text) == {
             "ok": True,
             "result": {"revision": "2"},
+            "instance_id": extension._registration.instance_id,
         }
 
         plugin_root = Path(__file__).parents[1]

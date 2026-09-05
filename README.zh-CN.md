@@ -13,6 +13,7 @@ OpenBio Comfy MCP 是一个本地 [Model Context Protocol](https://modelcontextp
 
 ## 功能
 
+- 通过一个 MCP 连接自动发现任意端口上的本地 ComfyUI 实例。
 - 以紧凑的结构化 MCP 输出检查当前活动画布。
 - 搜索已连接 ComfyUI 中安装的全部节点类型。
 - 检查指定节点类型的完整原生结构定义。
@@ -92,7 +93,7 @@ npm ci
 Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
 ```
 
-预期响应为 `{ "ok": true }`。
+响应包含 `"ok": true` 和当前服务器的 `instance_id`。检查其他实例时，将 `8188` 替换为对应的 ComfyUI 端口。
 
 ### 用于开发的同级仓库
 
@@ -132,7 +133,6 @@ npm ci
 $Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
 
 codex mcp add openbio-comfy-mcp `
-  --env OPENBIO_COMFY_URL=http://127.0.0.1:8188 `
   -- node "$Repo\dist\openbio-comfy-mcp.mjs"
 
 codex mcp get openbio-comfy-mcp --json
@@ -150,37 +150,48 @@ codex mcp list --json
   "mcpServers": {
     "openbio-comfy-mcp": {
       "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"],
-      "env": {
-        "OPENBIO_COMFY_URL": "http://127.0.0.1:8188"
-      }
+      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"]
     }
   }
 }
 ```
 
-不同 Host 的配置键可能不同。命令必须启动 `dist/openbio-comfy-mcp.mjs`，`OPENBIO_COMFY_URL` 必须指向本机 ComfyUI 服务器。
+不同 Host 的配置键可能不同。命令必须启动 `dist/openbio-comfy-mcp.mjs`。未设置 `OPENBIO_COMFY_URL` 时，会自动发现本地实例。
 
 ## 配置
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `OPENBIO_COMFY_URL` | `http://127.0.0.1:8188` | 本地 MCP 服务器连接的 ComfyUI 基础地址。 |
+| `OPENBIO_COMFY_URL` | 不设置（自动发现） | 设置本地基础地址，例如 `http://127.0.0.1:8189`，将此 MCP 连接固定到一个实例。 |
+| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | 共享注册目录。覆盖时，ComfyUI 和 MCP Host 必须设置为同一个路径。 |
+
+### 本地多实例
+
+在每个 ComfyUI 实例中安装本扩展，只需注册一个 MCP 服务器。各后端启动后将本地地址和 `instance_id` 写入共享目录；同一操作系统用户下运行的实例，无论使用什么端口都能被发现。MCP 服务器在使用前检查实例健康状态。发现过程通过回环地址访问，不扫描端口；暂不支持远程 ComfyUI。
+
+注册记录每 5 秒更新，正常退出时删除自身记录，超过 30 秒未更新的记录会被忽略。没有有效注册记录时，MCP 服务器仍尝试连接 `http://127.0.0.1:8188`，以兼容旧版扩展。如果现有 MCP 配置设置了 `OPENBIO_COMFY_URL`，需移除该变量并重新连接，才能启用自动发现。
+
+调用 `list_instances` 可查看各实例的 `instance_id`、`base_url`、`status`（`online` 或 `unavailable`）、已连接的 `canvases` 和 `last_focused_at`。只有一个在线实例时自动选择；有多个且未指定目标时，默认选择已连接页面中最后获得焦点的实例。切回聊天框后仍保留该时间，心跳不会更新它。焦点时间仅保存在内存中。
+
+也可以在聊天中指定实例，例如“修改 8189 端口上的工作流”。客户端先用 `list_instances` 找到对应的 `instance_id`，再传给 `inspect_canvas`，或直接检查列表中的 `canvas_id`；明确指定的目标优先。如果没有可用的焦点时间，或多个实例的最新时间相同，则返回 `AMBIGUOUS_INSTANCE`，需要指定目标。
+
+检查结果返回 `instance_id`、`canvas_id` 和 `revision`。将 `canvas_id` 作为不透明标识原样传回，即可把后续调用绑定到当前运行的实例；焦点变化、进入子图或重新连接 MCP Host 后仍保持绑定。节点目录工具传入同一个 `canvas_id`，即可查询该实例实际安装的节点。目标下线或重启时会返回错误，不会自动切换到其他实例；需重新列出并检查，获取新目标的画布标识。
 
 ## 工具
 
 | 工具 | 影响 | 用途 |
 | --- | --- | --- |
+| `list_instances` | 只读 | 列出本地实例、连接状态及已连接的画布。 |
 | `inspect_canvas` | 只读 | 检查紧凑拓扑、子图导航与端口，或查看指定原生节点/分组引用的详情。 |
-| `search_nodes` | 只读 | 搜索已连接 ComfyUI 的 `/object_info` 目录。 |
-| `inspect_node_type` | 只读 | 读取一个准确 `class_type` 的完整原生结构。 |
+| `search_nodes` | 只读 | 通过 `canvas_id` 或 `instance_id` 选择实例，搜索其 `/object_info` 目录。 |
+| `inspect_node_type` | 只读 | 通过 `canvas_id` 或 `instance_id` 选择实例，读取一个准确 `class_type` 的完整原生结构。 |
 | `present_canvas` | 仅界面状态 | 在原生图之间导航，选择并按需聚焦其中的对象。 |
 | `apply_canvas_patch` | 写入实时画布 | 原子化执行一批可撤销的节点、连线、分组或子图操作。 |
 
 推荐的编辑流程：
 
-1. 调用 `inspect_canvas`，保存返回的 `canvas_id` 和 `revision`。
-2. 添加不熟悉的节点类型前，使用 `search_nodes` 和 `inspect_node_type`。
+1. 调用 `inspect_canvas`，保存返回的 `instance_id`、`canvas_id` 和 `revision`。如需指定实例，先用 `list_instances` 获取并传入目标标识；否则在无歧义时默认选择最近获得焦点的实例。
+2. 添加不熟悉的节点类型前，向 `search_nodes` 和 `inspect_node_type` 传入该 `canvas_id`。
 3. 发送一个 `apply_canvas_patch`，使用检查结果中的 `canvas_id`，并将 `revision` 作为 `base_revision`。
 4. 可选调用 `present_canvas`，选择并聚焦已修改对象。
 5. 再次检查；如果结果不符合预期，使用 ComfyUI 原生撤销命令。
@@ -203,7 +214,7 @@ codex mcp list --json
 
 - 只安装来自可信来源的 MCP 服务器。本地服务器与启动它的 MCP Host 应用具有相同的操作系统权限。
 - 将 `apply_canvas_patch` 视为具有写入能力的工具，并在 MCP Host 中检查或批准它的使用。它会修改所选页面当前打开的工作流，但整个补丁可以通过一次原生撤销还原。
-- stdio MCP 服务器不监听网络端口，只会访问配置的 ComfyUI HTTP 服务器，默认为 `http://127.0.0.1:8188`。
+- stdio MCP 服务器不监听网络端口，只会访问自动发现或明确配置的本地 ComfyUI HTTP 服务器。
 - 画布命令只接受来自回环地址的请求。这个限制并不是 ComfyUI 的通用身份验证层；不要把未认证的 ComfyUI 服务器暴露给不可信网络。
 - 本桥接只暴露类型化图操作，不提供任意 JavaScript、DOM、文件系统、Shell、工作流排队或执行能力。
 - 画布检查可能包含工作流名称、路径、节点标题、提示词、文件名、样本标识和控件值。后续数据处理取决于所连接 MCP Host 和模型提供方的隐私政策及配置。
@@ -215,7 +226,11 @@ codex mcp list --json
 - Host 中没有工具：检查 `dist/openbio-comfy-mcp.mjs` 的绝对路径，然后重启 MCP Host 应用。源码仓库需先运行 `npm ci`。
 - 健康检查路由不存在：确认仓库位于 `custom_nodes` 下或已正确链接，然后重启 ComfyUI 并检查控制台导入错误。
 - `STALE_CANVAS`：重新调用 `inspect_canvas`，使用新返回的版本构建补丁。
-- 同时打开多个页面：默认使用最近获得焦点的 ComfyUI 页面；无法消除歧义时会返回错误，而不会猜测目标。
+- `AMBIGUOUS_INSTANCE`：实例焦点时间缺失或最新时间相同。调用 `list_instances`，再将目标 `instance_id` 或列表中的 `canvas_id` 传给 `inspect_canvas`。
+- `INSTANCE_UNAVAILABLE` 或 `INSTANCE_NOT_FOUND`：选定实例不可用或已不在注册目录中。调用 `list_instances`，重新检查目标运行实例；旧 `canvas_id` 不能指向重启后的服务器。
+- `INSTANCE_MISMATCH`：传入的实例与画布标识不一致。请使用列出或检查结果中同一画布对应的 `instance_id` 和 `canvas_id`。
+- 找不到实例：在该实例安装扩展并重启，确认 ComfyUI 与 MCP Host 使用同一个注册目录。如果 MCP 配置中的 `OPENBIO_COMFY_URL` 仍固定到一个服务器，请移除该变量。
+- 同一实例同时打开多个页面：默认使用该实例内最近获得焦点的 ComfyUI 页面；无法消除歧义时会返回错误，而不会猜测目标。
 - 端口 `5173` 的开发页面无法连接：按上面的说明改用由 ComfyUI 后端提供的前端。
 
 ## 更新与卸载

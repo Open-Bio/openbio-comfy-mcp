@@ -47,9 +47,18 @@ export function createLiveCanvasWebExtension({
   let unsubscribeWorkflow;
   let registeredWorkflowId;
   let commandQueue = Promise.resolve();
+  let wasFocused = false;
+  let lastFocusedAt = null;
 
   function isFocused() {
     return documentRef.visibilityState !== "hidden" && documentRef.hasFocus();
+  }
+
+  function handleFocusChange() {
+    const focused = isFocused();
+    if (focused && !wasFocused) lastFocusedAt = Date.now();
+    wasFocused = focused;
+    return registerSession();
   }
 
   async function registerSession() {
@@ -62,6 +71,7 @@ export function createLiveCanvasWebExtension({
       workflow_id: identity.workflow_id,
       canvas_id: identity.canvas_id,
       focused: isFocused(),
+      last_focused_at: lastFocusedAt,
       href: windowRef.location.href,
     });
   }
@@ -138,9 +148,9 @@ export function createLiveCanvasWebExtension({
     api.removeCustomEventListener(COMMAND_EVENT, enqueueCommand);
     api.removeEventListener("reconnected", registerSession);
     app.canvas.canvas.removeEventListener("litegraph:set-graph", registerSession);
-    windowRef.removeEventListener("focus", registerSession);
-    windowRef.removeEventListener("blur", registerSession);
-    documentRef.removeEventListener("visibilitychange", registerSession);
+    windowRef.removeEventListener("focus", handleFocusChange);
+    windowRef.removeEventListener("blur", handleFocusChange);
+    documentRef.removeEventListener("visibilitychange", handleFocusChange);
   }
 
   return {
@@ -152,11 +162,11 @@ export function createLiveCanvasWebExtension({
       unsubscribeWorkflow = app.extensionManager.workflow.$subscribe(handleWorkflowChange, {
         detached: true,
       });
-      windowRef.addEventListener("focus", registerSession);
-      windowRef.addEventListener("blur", registerSession);
-      documentRef.addEventListener("visibilitychange", registerSession);
+      windowRef.addEventListener("focus", handleFocusChange);
+      windowRef.addEventListener("blur", handleFocusChange);
+      documentRef.addEventListener("visibilitychange", handleFocusChange);
       heartbeatId = setIntervalFn(registerSession, heartbeatMs);
-      await registerSession();
+      await handleFocusChange();
     },
     destroy,
   };
