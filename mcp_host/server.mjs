@@ -161,13 +161,77 @@ const PATCH_OPERATION_SCHEMA = {
       required: ["op", "group_id", "node_ids"],
       additionalProperties: false,
     },
+    {
+      type: "object",
+      description: "Convert nodes into a native subgraph. Must be the last operation; inspect again for remapped node IDs.",
+      properties: {
+        op: { const: "convert_to_subgraph" },
+        node_ids: {
+          type: "array",
+          items: NODE_REFERENCE_SCHEMA,
+          minItems: 1,
+        },
+        temp_ref: {
+          type: "string",
+          pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+        },
+        title: { type: "string" },
+      },
+      required: ["op", "node_ids", "temp_ref"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      description: "Unpack a native subgraph instance into this graph. Must be the last operation; inspect again for remapped node IDs.",
+      properties: {
+        op: { const: "unpack_subgraph" },
+        node_id: NODE_REFERENCE_SCHEMA,
+      },
+      required: ["op", "node_id"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      description: "Add a port to the active subgraph definition and all its shared instances.",
+      properties: {
+        op: { const: "add_subgraph_port" },
+        direction: { type: "string", enum: ["input", "output"] },
+        name: { type: "string", minLength: 1 },
+        type: { type: "string", minLength: 1 },
+      },
+      required: ["op", "direction", "name", "type"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      description: "Change a subgraph port's display label; its name remains the stable connection key.",
+      properties: {
+        op: { const: "rename_subgraph_port" },
+        direction: { type: "string", enum: ["input", "output"] },
+        name: { type: "string", minLength: 1 },
+        label: { type: "string" },
+      },
+      required: ["op", "direction", "name", "label"],
+      additionalProperties: false,
+    },
+    {
+      type: "object",
+      description: "Remove a port from the active subgraph definition and all its shared instances.",
+      properties: {
+        op: { const: "remove_subgraph_port" },
+        direction: { type: "string", enum: ["input", "output"] },
+        name: { type: "string", minLength: 1 },
+      },
+      required: ["op", "direction", "name"],
+      additionalProperties: false,
+    },
   ],
 };
 
 const TOOL_DEFINITIONS = [
   {
     name: "inspect_canvas",
-    description: "Inspect a compact live ComfyUI canvas, or details for native node and group refs.",
+    description: "Inspect a compact live ComfyUI canvas, subgraph navigation and ports, or details for native node and group refs.",
     inputSchema: {
       type: "object",
       properties: {
@@ -186,11 +250,16 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "present_canvas",
-    description: "Select and optionally fit native items on a live ComfyUI canvas without modifying the workflow.",
+    description: "Navigate to a native graph, select and optionally fit its items without modifying the workflow.",
     inputSchema: {
       type: "object",
       properties: {
         canvas_id: { type: "string" },
+        graph_id: {
+          type: "string",
+          minLength: 1,
+          description: "Native graph ID from inspect_canvas; navigate to this graph before selecting refs.",
+        },
         refs: {
           type: "array",
           items: CANVAS_REFERENCE_SCHEMA,
@@ -324,7 +393,7 @@ export function createMcpServer({
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to change only the live selection or viewport. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to navigate between live graphs or change selection and viewport; its optional graph_id accepts a node's subgraph_id or root_graph_id from inspection. Pass the current canvas_id and refs belonging to the destination graph, then use the returned canvas_id and inspect again after navigation. Native graph IDs are not installed class_type values. Read subgraph boundary node IDs and slot names from inspection and reuse connect/disconnect for boundary links. Subgraph edits affect the shared definition and all its instances. convert_to_subgraph and unpack_subgraph must be the last operation in a patch; inspect again afterward for remapped IDs. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch.",
     },
   );
 

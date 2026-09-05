@@ -19,6 +19,7 @@ OpenBio Comfy MCP 是一个本地 [Model Context Protocol](https://modelcontextp
 - 选择并聚焦原生节点或分组，不修改工作流。
 - 添加、删除、连接、断开、配置和移动节点。
 - 添加、更新、适配、移动和删除 ComfyUI 原生分组。
+- 创建和解包原生子图，进入子图编辑节点、连线和对外端口。
 - 将一批修改作为一个原子化、可撤销的 ComfyUI 原生事务执行。
 - 在更改实时画布之前拒绝过期或无效的补丁。
 - 保持 MCP 传输在本机：stdio 服务器不监听端口，画布命令只接受来自回环地址的请求。
@@ -170,11 +171,11 @@ codex mcp list --json
 
 | 工具 | 影响 | 用途 |
 | --- | --- | --- |
-| `inspect_canvas` | 只读 | 检查紧凑拓扑，或查看指定原生节点/分组引用的详情。 |
+| `inspect_canvas` | 只读 | 检查紧凑拓扑、子图导航与端口，或查看指定原生节点/分组引用的详情。 |
 | `search_nodes` | 只读 | 搜索已连接 ComfyUI 的 `/object_info` 目录。 |
 | `inspect_node_type` | 只读 | 读取一个准确 `class_type` 的完整原生结构。 |
-| `present_canvas` | 仅界面状态 | 选择并按需聚焦原生对象，不修改工作流。 |
-| `apply_canvas_patch` | 写入实时画布 | 原子化执行一批可撤销的节点、连线或分组操作。 |
+| `present_canvas` | 仅界面状态 | 在原生图之间导航，选择并按需聚焦其中的对象。 |
+| `apply_canvas_patch` | 写入实时画布 | 原子化执行一批可撤销的节点、连线、分组或子图操作。 |
 
 推荐的编辑流程：
 
@@ -183,6 +184,12 @@ codex mcp list --json
 3. 发送一个 `apply_canvas_patch`，使用检查结果中的 `canvas_id`，并将 `revision` 作为 `base_revision`。
 4. 可选调用 `present_canvas`，选择并聚焦已修改对象。
 5. 再次检查；如果结果不符合预期，使用 ComfyUI 原生撤销命令。
+
+操作子图时，`inspect_canvas` 会返回 `root_graph_id`，并在子图节点上提供 `subgraph_id`。将任一原生图 ID 作为 `present_canvas.graph_id`，同时传入当前 `canvas_id`；`refs` 指向目标图中的对象。导航后使用返回的新画布标识，再次检查后编辑。原生图 ID 对应工作流定义，不是 `/object_info` 中安装的节点类型。
+
+进入子图后，检查结果还包含 `subgraph.inputs` 和 `subgraph.outputs`，各自提供边界 `node_id` 和命名 `slots`。使用这些 ID 和端口名即可通过原有 `connect`、`disconnect` 操作连接或断开边界。用 `add_subgraph_port`、`rename_subgraph_port`、`remove_subgraph_port` 添加、更改显示标签或删除对外端口；更改标签只修改 `label`，保留用于连线的 `name`。对子图定义的编辑会影响共享该定义的所有实例。
+
+使用 `convert_to_subgraph` 将明确指定的 `node_ids` 封装成子图，使用 `unpack_subgraph` 解包实例。这两种操作必须放在补丁最后，因为原生转换会重新映射节点 ID，之后需再次检查。包含子图编辑的补丁同样只需一次原生撤销即可还原。
 
 准确的公开行为和操作集合见 [docs/spec.md](docs/spec.md)。
 

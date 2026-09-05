@@ -116,6 +116,10 @@ export function createLiveCanvasWebExtension({
           `Unsupported canvas command: ${message.command}`,
         );
       }
+      if (readLiveCanvasIdentity(app, pageId).canvas_id !== liveCanvas.identity.canvas_id) {
+        // Make the returned canvas_id routable before the client sends its next command.
+        await registerSession();
+      }
       await reply(message.request_id, { ok: true, result });
     } catch (error) {
       await reply(message.request_id, { ok: false, error: serializedError(error) });

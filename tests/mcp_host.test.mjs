@@ -101,6 +101,11 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
     type: "object",
     properties: {
       canvas_id: { type: "string" },
+      graph_id: {
+        type: "string",
+        minLength: 1,
+        description: "Native graph ID from inspect_canvas; navigate to this graph before selecting refs.",
+      },
       refs: {
         type: "array",
         items: {
@@ -204,6 +209,39 @@ test("present_canvas sends presentation state to the selected live canvas", asyn
   });
   assert.deepEqual(received, {
     canvas_id: "canvas-7",
+    command: "present_canvas",
+    arguments: arguments_,
+  });
+});
+
+test("present_canvas relays graph navigation and returns the new canvas identity", async (t) => {
+  let received;
+  const comfy = await startFakeComfy(async (request, response) => {
+    received = await readJson(request);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      result: {
+        canvas_id: "canvas-subgraph",
+        selection: [],
+        viewport: { offset: [0, 0], scale: 1 },
+      },
+    }));
+  });
+  t.after(() => comfy.close());
+  const client = await connectInMemory(t, comfy.url);
+  const arguments_ = {
+    canvas_id: "canvas-root",
+    graph_id: "subgraph-1",
+    refs: [],
+    selection: "replace",
+    fit_view: false,
+  };
+
+  const result = await client.callTool({ name: "present_canvas", arguments: arguments_ });
+
+  assert.equal(result.structuredContent.canvas_id, "canvas-subgraph");
+  assert.deepEqual(received, {
+    canvas_id: "canvas-root",
     command: "present_canvas",
     arguments: arguments_,
   });
@@ -432,6 +470,52 @@ test("tools/list advertises the exact supported GraphPatch operations", async (t
         required: ["op", "group_id", "node_ids"],
         additionalProperties: false,
       },
+      {
+        op: "convert_to_subgraph",
+        fields: ["op", "node_ids", "temp_ref", "title"],
+        required: ["op", "node_ids", "temp_ref"],
+        additionalProperties: false,
+      },
+      {
+        op: "unpack_subgraph",
+        fields: ["op", "node_id"],
+        required: ["op", "node_id"],
+        additionalProperties: false,
+      },
+      {
+        op: "add_subgraph_port",
+        fields: ["op", "direction", "name", "type"],
+        required: ["op", "direction", "name", "type"],
+        additionalProperties: false,
+      },
+      {
+        op: "rename_subgraph_port",
+        fields: ["op", "direction", "name", "label"],
+        required: ["op", "direction", "name", "label"],
+        additionalProperties: false,
+      },
+      {
+        op: "remove_subgraph_port",
+        fields: ["op", "direction", "name"],
+        required: ["op", "direction", "name"],
+        additionalProperties: false,
+      },
     ],
   );
+  const conversion = variants.find(({ properties }) => properties.op.const === "convert_to_subgraph");
+  assert.deepEqual(conversion.properties.node_ids, {
+    type: "array",
+    items: { type: ["string", "integer"] },
+    minItems: 1,
+  });
+  assert.deepEqual(conversion.properties.temp_ref, {
+    type: "string",
+    pattern: "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+  });
+  for (const variant of variants.filter(({ properties }) => properties.op.const.endsWith("subgraph_port"))) {
+    assert.deepEqual(variant.properties.direction, { type: "string", enum: ["input", "output"] });
+    assert.deepEqual(variant.properties.name, { type: "string", minLength: 1 });
+  }
+  const addPort = variants.find(({ properties }) => properties.op.const === "add_subgraph_port");
+  assert.deepEqual(addPort.properties.type, { type: "string", minLength: 1 });
 });

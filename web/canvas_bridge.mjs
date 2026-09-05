@@ -28,14 +28,25 @@ export function canvasIdentity(pageId, workflowId, graphId) {
   return `${pageId}:${workflowId || "unsaved"}:${graphId || "root"}`;
 }
 
-function revisionOf(snapshot) {
-  const text = JSON.stringify({
+function revisionState(snapshot) {
+  return {
     nodes: snapshot.nodes ?? [],
     links: snapshot.links ?? [],
     groups: snapshot.groups ?? [],
     reroutes: snapshot.reroutes ?? [],
     legacy_reroutes: snapshot.extra?.reroutes ?? [],
-  });
+    name: snapshot.name,
+    inputs: snapshot.inputs,
+    outputs: snapshot.outputs,
+    widgets: snapshot.widgets,
+    inputNode: snapshot.inputNode,
+    outputNode: snapshot.outputNode,
+    subgraphs: snapshot.definitions?.subgraphs?.map(revisionState),
+  };
+}
+
+function revisionOf(snapshot) {
+  const text = JSON.stringify(revisionState(snapshot));
   let hash = 0x811c9dc5;
   for (let index = 0; index < text.length; index += 1) {
     hash ^= text.charCodeAt(index);
@@ -181,6 +192,45 @@ function assertUniqueTempRef(context, tempRef) {
   if (Object.hasOwn(context.preparedNodes, tempRef) || Object.hasOwn(context.preparedGroups, tempRef)) {
     throw bridgeError("duplicate_temp_ref", `Duplicate temp_ref: ${tempRef}`);
   }
+}
+
+function assertStructuralOperationOrder(operations) {
+  const index = operations.findIndex(({ op }) => (
+    op === "convert_to_subgraph" || op === "unpack_subgraph"
+  ));
+  if (index !== -1 && index !== operations.length - 1) {
+    throw bridgeError(
+      "invalid_patch",
+      "A subgraph conversion or unpack must be the final operation; inspect again before editing its new nodes",
+    );
+  }
+}
+
+function requireSubgraph(graph) {
+  if (!graph.inputNode || !graph.outputNode) {
+    throw bridgeError("subgraph_required", "This operation requires an active subgraph");
+  }
+}
+
+function subgraphPort(ports, name, direction) {
+  const port = ports.find((candidate) => candidate.name === name);
+  if (!port) {
+    throw bridgeError("port_not_found", `Subgraph ${direction} does not exist: ${name}`);
+  }
+  return port;
+}
+
+function linkEndpoint(context, reference, name, side, planning = false) {
+  const direction = side === "output" ? "input" : "output";
+  const ioNode = context.graph[`${direction}Node`];
+  if (ioNode && String(ioNode.id) === String(reference)) {
+    const ports = planning ? context.plannedPorts[direction] : context.graph[`${direction}s`];
+    return { node: ioNode, slot: subgraphPort(ports, name, direction) };
+  }
+  const node = planning
+    ? plannedNode(context, reference)
+    : resolveNode(context.graph, reference, context.idMap);
+  return { node, slot: side === "output" ? outputSlot(node, name) : inputSlot(node, name) };
 }
 
 const OPERATION_HANDLERS = new Map([
@@ -339,33 +389,38 @@ const OPERATION_HANDLERS = new Map([
   }],
   ["connect", {
     preflight(context, operation) {
-      const source = plannedNode(context, operation.source);
-      const target = plannedNode(context, operation.target);
-      const output = outputSlot(source, operation.output_name);
-      const input = inputSlot(target, operation.input_name);
-      if (source === target || context.LiteGraph.isValidConnection?.(output.type, input.type) === false) {
+      const source = linkEndpoint(context, operation.source, operation.output_name, "output", true);
+      const target = linkEndpoint(context, operation.target, operation.input_name, "input", true);
+      // Native SubgraphInput.connect requires an LGraphNode target; boundary passthrough is unsupported.
+      const passthrough = source.node === context.graph.inputNode && target.node === context.graph.outputNode;
+      if (
+        passthrough || source.node === target.node
+        || context.LiteGraph.isValidConnection?.(source.slot.type, target.slot.type) === false
+      ) {
         throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
       }
     },
     apply(context, operation) {
-      const source = resolveNode(context.graph, operation.source, context.idMap);
-      const target = resolveNode(context.graph, operation.target, context.idMap);
-      if (!source.connect(operation.output_name, target, operation.input_name)) {
-        throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
-      }
-      context.changedNodeIds.add(String(source.id));
-      context.changedNodeIds.add(String(target.id));
+      const source = linkEndpoint(context, operation.source, operation.output_name, "output");
+      const target = linkEndpoint(context, operation.target, operation.input_name, "input");
+      let link;
+      if (source.node === context.graph.inputNode) link = source.slot.connect(target.slot, target.node);
+      else if (target.node === context.graph.outputNode) link = target.slot.connect(source.slot, source.node);
+      else link = source.node.connect(operation.output_name, target.node, operation.input_name);
+      if (!link) throw bridgeError("connection_rejected", "ComfyUI rejected the requested connection");
+      context.changedNodeIds.add(String(source.node.id));
+      context.changedNodeIds.add(String(target.node.id));
     },
   }],
   ["disconnect", {
     preflight(context, operation) {
-      inputSlot(plannedNode(context, operation.target), operation.input_name);
+      linkEndpoint(context, operation.target, operation.input_name, "input", true);
     },
     apply(context, operation) {
-      const target = resolveNode(context.graph, operation.target, context.idMap);
-      inputSlot(target, operation.input_name);
-      context.changedNodeIds.add(String(target.id));
-      if (target.disconnectInput(operation.input_name) === false) {
+      const target = linkEndpoint(context, operation.target, operation.input_name, "input");
+      context.changedNodeIds.add(String(target.node.id));
+      if (target.node === context.graph.outputNode) target.slot.disconnect();
+      else if (target.node.disconnectInput(operation.input_name) === false) {
         throw bridgeError("connection_rejected", "ComfyUI rejected the requested disconnection");
       }
     },
@@ -378,6 +433,100 @@ const OPERATION_HANDLERS = new Map([
       const node = resolveNode(context.graph, operation.node_id, context.idMap);
       context.changedNodeIds.add(String(node.id));
       node.pos = clone(operation.pos);
+    },
+  }],
+  ["convert_to_subgraph", {
+    preflight(context, operation) {
+      if (!Array.isArray(operation.node_ids) || operation.node_ids.length === 0) {
+        throw bridgeError("invalid_patch", "Subgraph conversion requires a non-empty node_ids array");
+      }
+      assertUniqueTempRef(context, operation.temp_ref);
+      for (const reference of operation.node_ids) {
+        assertNodeRemovable(plannedNode(context, reference));
+      }
+    },
+    apply(context, operation) {
+      const nodes = operation.node_ids.map((reference) => resolveNode(context.graph, reference, context.idMap));
+      for (const node of nodes) assertNodeRemovable(node);
+      const { subgraph, node } = context.graph.convertToSubgraph(new Set(nodes));
+      if (nodes.some((oldNode) => context.graph.getNodeById(oldNode.id) === oldNode)) {
+        throw bridgeError("removal_rejected", "ComfyUI rejected removal of nodes during subgraph conversion");
+      }
+      if (Object.hasOwn(operation, "title")) {
+        subgraph.name = operation.title;
+        node.title = operation.title;
+      }
+      context.idMap[operation.temp_ref] = String(node.id);
+      for (const oldNode of nodes) context.changedNodeIds.add(String(oldNode.id));
+      context.changedNodeIds.add(String(node.id));
+    },
+  }],
+  ["unpack_subgraph", {
+    preflight(context, operation) {
+      const node = plannedNode(context, operation.node_id);
+      if (!node.isSubgraphNode?.()) {
+        throw bridgeError("subgraph_required", `Node is not a subgraph: ${operation.node_id}`);
+      }
+      assertNodeRemovable(node);
+    },
+    apply(context, operation) {
+      const node = resolveNode(context.graph, operation.node_id, context.idMap);
+      assertNodeRemovable(node);
+      const nodesBefore = new Set(context.graph.nodes);
+      const groupsBefore = new Set(context.graph.groups);
+      context.graph.unpackSubgraph(node);
+      if (context.graph.getNodeById(node.id) === node) {
+        throw bridgeError("removal_rejected", "ComfyUI rejected removal of the unpacked subgraph node");
+      }
+      context.changedNodeIds.add(String(node.id));
+      for (const added of context.graph.nodes) {
+        if (!nodesBefore.has(added)) context.changedNodeIds.add(String(added.id));
+      }
+      for (const added of context.graph.groups) {
+        if (!groupsBefore.has(added)) context.changedGroupIds.add(String(added.id));
+      }
+    },
+  }],
+  ["add_subgraph_port", {
+    preflight(context, operation) {
+      requireSubgraph(context.graph);
+      const ports = context.plannedPorts[operation.direction];
+      if (ports.some((port) => port.name === operation.name)) {
+        throw bridgeError("duplicate_port", `Subgraph ${operation.direction} already exists: ${operation.name}`);
+      }
+      ports.push({ name: operation.name, type: operation.type });
+    },
+    apply(context, operation) {
+      if (operation.direction === "input") context.graph.addInput(operation.name, operation.type);
+      else context.graph.addOutput(operation.name, operation.type);
+    },
+  }],
+  ["rename_subgraph_port", {
+    preflight(context, operation) {
+      requireSubgraph(context.graph);
+      subgraphPort(context.plannedPorts[operation.direction], operation.name, operation.direction);
+    },
+    apply(context, operation) {
+      const port = subgraphPort(context.graph[`${operation.direction}s`], operation.name, operation.direction);
+      if (operation.direction === "input") context.graph.renameInput(port, operation.label);
+      else context.graph.renameOutput(port, operation.label);
+    },
+  }],
+  ["remove_subgraph_port", {
+    preflight(context, operation) {
+      requireSubgraph(context.graph);
+      const ports = context.plannedPorts[operation.direction];
+      const port = subgraphPort(ports, operation.name, operation.direction);
+      ports.splice(ports.indexOf(port), 1);
+    },
+    apply(context, operation) {
+      const ports = context.graph[`${operation.direction}s`];
+      const port = subgraphPort(ports, operation.name, operation.direction);
+      if (operation.direction === "input") context.graph.removeInput(port);
+      else context.graph.removeOutput(port);
+      if (ports.includes(port)) {
+        throw bridgeError("removal_rejected", `ComfyUI rejected removal of subgraph ${operation.direction}: ${operation.name}`);
+      }
     },
   }],
 ]);
@@ -393,6 +542,7 @@ function operationHandler(operation) {
 }
 
 function preflightOperations(graph, LiteGraph, operations) {
+  assertStructuralOperationOrder(operations);
   const context = {
     graph,
     LiteGraph,
@@ -401,6 +551,10 @@ function preflightOperations(graph, LiteGraph, operations) {
     removedNodes: new Set(),
     removedGroups: new Set(),
     plannedGroupPinned: new Map(),
+    plannedPorts: {
+      input: (graph.inputs ?? []).map(({ name, type }) => ({ name, type })),
+      output: (graph.outputs ?? []).map(({ name, type }) => ({ name, type })),
+    },
   };
   const plan = [];
   for (const operation of operations) {
@@ -513,6 +667,7 @@ function compactNode(node) {
   return {
     id: String(node.id),
     type: node.type,
+    ...(node.isSubgraphNode?.() ? { subgraph_id: String(node.subgraph.id) } : {}),
     ...(node.title ? { title: node.title } : {}),
     pos: Array.from(node.pos),
     size: Array.from(node.size),
@@ -520,18 +675,24 @@ function compactNode(node) {
 }
 
 function compactLink(graph, link) {
-  const [id, sourceId, outputIndex, targetId, inputIndex, type] = link;
+  const [id, sourceId, outputIndex, targetId, inputIndex, type] = Array.isArray(link)
+    ? link
+    : [link.id, link.origin_id, link.origin_slot, link.target_id, link.target_slot, link.type];
   const source = graph.getNodeById(sourceId);
   const target = graph.getNodeById(targetId);
   return {
     id: String(id),
     from: {
       node: String(sourceId),
-      output: source?.outputs?.[outputIndex]?.name ?? String(outputIndex),
+      output: source?.outputs?.[outputIndex]?.name
+        ?? (String(sourceId) === String(graph.inputNode?.id) ? graph.inputs[outputIndex]?.name : undefined)
+        ?? String(outputIndex),
     },
     to: {
       node: String(targetId),
-      input: target?.inputs?.[inputIndex]?.name ?? String(inputIndex),
+      input: target?.inputs?.[inputIndex]?.name
+        ?? (String(targetId) === String(graph.outputNode?.id) ? graph.outputs[inputIndex]?.name : undefined)
+        ?? String(inputIndex),
     },
     ...(type == null ? {} : { type: clone(type) }),
   };
@@ -577,6 +738,7 @@ function namedWidgetValues(node, serializedNode) {
 function compactSlot(slot) {
   return {
     name: slot.name,
+    ...(slot.label == null ? {} : { label: slot.label }),
     ...(slot.type == null ? {} : { type: clone(slot.type) }),
   };
 }
@@ -611,6 +773,7 @@ function detailedGroup(graph, group) {
 export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
   const canvas = app.canvas;
   const graph = canvas.graph;
+  const rootGraph = graph.rootGraph ?? graph;
   const workflow = app.extensionManager.workflow.activeWorkflow;
   const identity = readLiveCanvasIdentity(app, pageId ?? "");
 
@@ -618,16 +781,24 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
     identity: clone(identity),
 
     inspectCanvas({ refs } = {}) {
-      const snapshot = graph.serialize();
+      const snapshot = graph.inputNode ? graph.asSerialisable() : graph.serialize();
       const inspectionContext = {
         page_id: identity.page_id,
         workflow_id: identity.workflow_id,
         workflow_path: identity.workflow_path,
         graph_id: identity.graph_id,
+        root_graph_id: String(rootGraph.id),
         canvas_id: identity.canvas_id,
-        revision: revisionOf(snapshot),
+        revision: revisionOf(rootGraph === graph ? snapshot : rootGraph.serialize()),
         selection: canonicalSelection(canvas, graph),
         viewport: canonicalViewport(canvas),
+        ...(graph.inputNode ? {
+          subgraph: {
+            name: graph.name,
+            inputs: { node_id: String(graph.inputNode.id), slots: graph.inputs.map(compactSlot) },
+            outputs: { node_id: String(graph.outputNode.id), slots: graph.outputs.map(compactSlot) },
+          },
+        } : {}),
       };
       const links = (snapshot.links ?? []).map((link) => compactLink(graph, link));
       if (refs !== undefined) {
@@ -684,6 +855,36 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
       }
       if (typeof presentation.fit_view !== "boolean") {
         throw bridgeError("invalid_presentation", "Canvas presentation fit_view must be a boolean");
+      }
+
+      if (presentation.graph_id !== undefined && presentation.graph_id !== String(graph.id)) {
+        const targetGraph = presentation.graph_id === String(rootGraph.id)
+          ? rootGraph
+          : rootGraph.subgraphs?.get(presentation.graph_id);
+        if (!targetGraph) {
+          throw bridgeError("graph_not_found", `Graph does not exist: ${presentation.graph_id}`);
+        }
+        // Resolve every target ref before changing the visible graph.
+        for (const reference of presentation.refs) {
+          if (reference?.kind === "group") resolveGroup(targetGraph, reference.id, {});
+          else if (reference?.kind === "node") resolveNode(targetGraph, reference.id, {});
+          else throw bridgeError("invalid_presentation", "Canvas presentation refs must target nodes or groups");
+        }
+        const host = graph.nodes.find((node) => node.isSubgraphNode?.() && node.subgraph === targetGraph);
+        if (host) canvas.openSubgraph(targetGraph, host);
+        else {
+          canvas.subgraph = targetGraph === rootGraph ? undefined : targetGraph;
+          canvas.setGraph(targetGraph);
+        }
+        if (canvas.graph !== targetGraph) {
+          throw bridgeError("navigation_rejected", "ComfyUI rejected the requested graph navigation");
+        }
+        canvas.ds.computeVisibleArea(canvas.viewport);
+        const targetCanvas = createLiveCanvas(app, LiteGraph, { pageId });
+        return targetCanvas.presentCanvas({
+          ...presentation,
+          canvas_id: targetCanvas.identity.canvas_id,
+        });
       }
 
       const items = presentation.refs.map((reference, index) => {
@@ -774,7 +975,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         });
       }
 
-      const snapshot = graph.serialize();
+      const snapshot = clone(rootGraph.serialize());
       const currentRevision = revisionOf(snapshot);
       if (patch.base_revision !== currentRevision) {
         throw bridgeError("stale_revision", "The ComfyUI canvas changed; inspect it again", {
@@ -811,7 +1012,12 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
       const restoreGraph = () => {
         if (restored || !targetIsCurrent()) return;
         try {
-          graph.configure(clone(snapshot));
+          rootGraph.configure(clone(snapshot));
+          if (rootGraph !== graph) {
+            const restoredGraph = rootGraph.subgraphs.get(graph.id);
+            canvas.subgraph = restoredGraph;
+            canvas.setGraph(restoredGraph);
+          }
           restored = true;
         } catch (error) {
           rememberError(error);
@@ -888,7 +1094,7 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
           rememberError(bridgeError("canvas_changed", "The active ComfyUI canvas changed; inspect it again"));
         } else {
           try {
-            appliedSnapshot = graph.serialize();
+            appliedSnapshot = rootGraph.serialize();
           } catch (error) {
             rememberError(error);
             restoreGraph();

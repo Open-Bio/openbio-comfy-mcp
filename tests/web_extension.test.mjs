@@ -10,13 +10,13 @@ import {
 } from "../web/extension.mjs";
 import { createLiveCanvas } from "../web/canvas_bridge.mjs";
 import { createCanvasFixture } from "./helpers/canvas_fixture.mjs";
+import { createSubgraphFixture } from "./helpers/subgraph_fixture.mjs";
 
 function response() {
   return { ok: true, async json() { return {}; } };
 }
 
-function createWebFixture() {
-  const graphFixture = createCanvasFixture();
+function createWebFixture(graphFixture = createCanvasFixture()) {
   const requests = [];
   const customListeners = new Map();
   const eventListeners = new Map();
@@ -274,6 +274,55 @@ test("present_canvas returns the live selection using the relay-selected canvas 
       },
     },
   });
+});
+
+test("subgraph navigation registers its canvas before replying so the next inspect is routable", async (t) => {
+  const fixture = createWebFixture(createSubgraphFixture());
+  await fixture.extension.setup();
+  fixture.requests.length = 0;
+  const fetchApi = fixture.api.fetchApi.bind(fixture.api);
+  let releaseRegistration;
+  let registrationPending = false;
+  const registration = new Promise((resolve) => { releaseRegistration = resolve; });
+  t.after(() => releaseRegistration());
+  fixture.api.fetchApi = async (path, options) => {
+    const result = await fetchApi(path, options);
+    if (path === SESSION_PATH) {
+      registrationPending = true;
+      await registration;
+    }
+    return result;
+  };
+  const command = fixture.customListeners.get(COMMAND_EVENT);
+  const navigation = command({ detail: {
+    request_id: "navigate-subgraph",
+    page_id: "page-a",
+    workflow_id: "workflow-123",
+    canvas_id: "page-a:workflow-123:canvas-root",
+    command: "present_canvas",
+    arguments: { graph_id: fixture.subgraph.id, refs: [], selection: "replace", fit_view: false },
+  } });
+  await new Promise(setImmediate);
+  assert.equal(registrationPending, true);
+  assert.deepEqual(fixture.requests.map(({ path }) => path), [SESSION_PATH]);
+  releaseRegistration();
+  await navigation;
+  const navigationReply = fixture.requests.at(-1).body;
+  assert.equal(navigationReply.ok, true);
+  assert.equal(fixture.requests[0].body.canvas_id, navigationReply.result.canvas_id);
+
+  await command({ detail: {
+    request_id: "inspect-after-navigation",
+    page_id: "page-a",
+    workflow_id: "workflow-123",
+    canvas_id: navigationReply.result.canvas_id,
+    command: "inspect_canvas",
+    arguments: {},
+  } });
+  const inspectionReply = fixture.requests.at(-1).body;
+  assert.equal(inspectionReply.ok, true);
+  assert.equal(inspectionReply.result.graph_id, fixture.subgraph.id);
+  assert.equal(inspectionReply.result.subgraph.inputs.slots[0].name, "entry");
 });
 
 test("concurrent canvas commands remain separate native transactions", async () => {

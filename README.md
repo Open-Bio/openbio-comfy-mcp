@@ -19,6 +19,7 @@ OpenBio Comfy MCP is a local [Model Context Protocol](https://modelcontextprotoc
 - Select and focus native nodes or groups without modifying the workflow.
 - Add, remove, connect, disconnect, configure, and move nodes.
 - Add, update, fit, move, and remove native ComfyUI groups.
+- Create and unpack native subgraphs, navigate into them, and edit their nodes, links, and exposed ports.
 - Apply a batch as one atomic, undoable native ComfyUI transaction.
 - Reject stale or invalid patches before changing the live graph.
 - Keep the MCP transport local: the stdio server opens no listening port, and canvas commands are accepted by the relay from loopback only.
@@ -170,11 +171,11 @@ Configuration keys vary by host. The command must start `dist/openbio-comfy-mcp.
 
 | Tool | Effect | Purpose |
 | --- | --- | --- |
-| `inspect_canvas` | Read-only | Inspect compact topology or details for exact native node/group refs. |
+| `inspect_canvas` | Read-only | Inspect compact topology, subgraph navigation and ports, or details for exact native node/group refs. |
 | `search_nodes` | Read-only | Search the connected ComfyUI `/object_info` catalog. |
 | `inspect_node_type` | Read-only | Read the complete native schema for one exact `class_type`. |
-| `present_canvas` | UI state only | Select and optionally fit native items without modifying the workflow. |
-| `apply_canvas_patch` | Writes the live canvas | Apply one atomic, undoable batch of typed node, link, or group operations. |
+| `present_canvas` | UI state only | Navigate between native graphs, select and optionally fit their items. |
+| `apply_canvas_patch` | Writes the live canvas | Apply one atomic, undoable batch of typed node, link, group, or subgraph operations. |
 
 Recommended editing flow:
 
@@ -183,6 +184,12 @@ Recommended editing flow:
 3. Send one `apply_canvas_patch` with the inspected `canvas_id` and `revision` as `base_revision`.
 4. Optionally call `present_canvas` to select and focus the changed items.
 5. Inspect again. If the result is unwanted, use ComfyUI's native undo command.
+
+For subgraphs, `inspect_canvas` returns `root_graph_id` and a `subgraph_id` on each subgraph node. Pass either native graph ID as `present_canvas.graph_id`, together with the current `canvas_id`; `refs` refer to items in the destination graph. Use the returned canvas identity and inspect again before editing. Native graph IDs are workflow definitions, not installed node types from `/object_info`.
+
+Inside a subgraph, inspection also returns `subgraph.inputs` and `subgraph.outputs`, each with a boundary `node_id` and named `slots`. Use those IDs and slot names with ordinary `connect` and `disconnect` operations. Add, relabel, or remove exposed ports with `add_subgraph_port`, `rename_subgraph_port`, and `remove_subgraph_port`; a relabel changes `label` while preserving the connection `name`. Editing a subgraph definition affects every instance that shares it.
+
+Use `convert_to_subgraph` to wrap explicit `node_ids` and `unpack_subgraph` to expand an instance. Either operation must be last in its patch because native conversion remaps node IDs; inspect again afterward. Each patch, including subgraph edits, remains one native undo transaction.
 
 See [docs/spec.md](docs/spec.md) for the exact public behavior and operation set.
 
