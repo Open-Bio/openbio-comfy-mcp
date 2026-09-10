@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openbio-comfy-mcp"
-description = "Live-canvas MCP bridge for ComfyUI and OpenBio."
-version = "0.1.0"
+description = "Let an AI inspect and edit the workflow currently open on your ComfyUI canvas. After install, add npx -y openbio-comfy-mcp@latest to Cursor, Codex, or Claude."
+version = "0.1.1"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -22,6 +22,8 @@ Issues = "https://github.com/Open-Bio/openbio-comfy-mcp/issues"
 [tool.comfy]
 PublisherId = "open-bio"
 DisplayName = "OpenBio Comfy MCP"
+Icon = "https://raw.githubusercontent.com/Open-Bio/openbio-comfy-mcp/main/media/icon.png"
+Banner = "https://raw.githubusercontent.com/Open-Bio/openbio-comfy-mcp/main/media/banner.png"
 requires-comfyui = ">=0.33.0"
 web = "web"
 includes = ["dist"]

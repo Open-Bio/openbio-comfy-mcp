@@ -3,72 +3,139 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/openbio-comfy-mcp.svg)](https://www.npmjs.com/package/openbio-comfy-mcp)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
 [![ComfyUI 0.33.0+](https://img.shields.io/badge/ComfyUI-0.33.0%2B-blue.svg)](https://github.com/Comfy-Org/ComfyUI)
 
-OpenBio Comfy MCP is a local [Model Context Protocol](https://modelcontextprotocol.io/) server and ComfyUI V3 extension for inspecting and editing the workflow currently open on a live ComfyUI canvas. It uses ComfyUI's native graph, selection, group, dirty-state, and undo behavior; it never queues, executes, or saves a workflow automatically.
+Let Cursor, Codex, Claude, or another local AI **inspect and edit the workflow currently open** on your ComfyUI canvas.
 
-> [!IMPORTANT]
-> Published releases are installable through ComfyUI Manager. Registry packages include a bundled MCP server, so Manager users do not need to run `npm ci`.
+It uses ComfyUI's own graph, selection, groups, and undo. It never queues, runs, or saves a workflow for you.
 
-## Features
+This is **not** [Comfy's official MCP](https://docs.comfy.org/agent-tools/mcp). Official Comfy MCP generates images on Comfy Cloud or runs workflow files through `comfy-mcp`. This project edits the live graph you already have open.
 
-- Discover local ComfyUI instances on any port through one MCP connection.
-- Inspect the active canvas as compact, structured MCP output.
-- Search all node types installed in the connected ComfyUI instance.
-- Inspect the complete native schema of an exact node type.
-- Select and focus native nodes or groups without modifying the workflow.
-- Add, remove, connect, disconnect, configure, and move nodes.
-- Add, update, fit, move, and remove native ComfyUI groups.
-- Create and unpack native subgraphs, navigate into them, and edit their nodes, links, and exposed ports.
-- Apply a batch as one atomic, undoable native ComfyUI transaction.
-- Reject stale or invalid patches before changing the live graph.
-- Keep the MCP transport local: the stdio server opens no listening port, and canvas commands are accepted by the relay from loopback only.
+## What you can ask
 
-## Architecture
+Once both pieces below are installed and a ComfyUI window is open:
 
-```text
-MCP host application (Codex or another local host)
-        | MCP over stdio
-        v
-Node.js MCP server
-        | ComfyUI HTTP
-        v
-Python V3 extension relay
-        | ComfyUI WebSocket event
-        v
-Browser page extension -> active app.canvas.graph
+- What is on this canvas?
+- Add a node, connect these two, or move this group.
+- Search the node types installed in *this* ComfyUI.
+- Pack or unpack a native subgraph.
+
+Changes appear on the canvas immediately. One ComfyUI undo reverts a whole patch.
+
+## Install
+
+You need **both** steps. Manager only adds the ComfyUI side. The AI client still needs the MCP server.
+
+### 1. ComfyUI extension
+
+In ComfyUI Manager, search for `OpenBio Comfy MCP` or `openbio-comfy-mcp`, install it, and restart ComfyUI. Keep a browser or Desktop window open while you use the tools.
+
+The extension has no extra Python packages. Registry builds already include the bundled MCP server.
+
+Confirm the relay is up:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
 ```
 
-The browser page is the authority for the live graph. The Python extension correlates requests with a connected page, while the Node.js stdio server keeps no authoritative workflow copy. The extension registers no ComfyUI execution nodes and does not patch ComfyUI Core, ComfyUI_frontend, Desktop, or the workflow file format.
+You should see `"ok": true`. Use your ComfyUI port if it is not `8188`.
+
+### 2. MCP host
+
+Node.js 20+ must be on your `PATH`. Point the host at the published package — do not copy a file path:
+
+```json
+{
+  "mcpServers": {
+    "openbio-comfy-mcp": {
+      "command": "npx",
+      "args": ["-y", "openbio-comfy-mcp@latest"]
+    }
+  }
+}
+```
+
+#### Codex
+
+```powershell
+codex mcp add openbio-comfy-mcp -- npx -y openbio-comfy-mcp@latest
+codex mcp get openbio-comfy-mcp --json
+```
+
+Restart the Codex client after adding it. Desktop, CLI, and the IDE extension share the same host config. See the [Codex MCP docs](https://developers.openai.com/codex/mcp).
+
+#### Cursor
+
+Add the JSON above to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` in a project, then reload MCP.
+
+#### Other stdio hosts (Claude Desktop, Claude Code, …)
+
+Use the same `npx -y openbio-comfy-mcp@latest` command. Key names vary by host; the command must stay `npx`.
+
+Local ComfyUI instances are discovered automatically. You only need one MCP registration even if several ComfyUI processes are running.
 
 ## Requirements
 
 - ComfyUI 0.33.0 or newer
 - Python 3.10 or newer in the ComfyUI runtime
-- Node.js 20 or newer
-- An MCP host application that supports local stdio servers
-- A ComfyUI browser or Desktop page kept open while the tools are used
+- Node.js 20 or newer on the PATH of the MCP host
+- An MCP host that can launch a local stdio server
+- A ComfyUI page left open while the tools run
 
-The ComfyUI extension has no additional Python package dependencies. Registry releases include a prebuilt MCP server. For source and development checkouts, `npm ci` installs only Node.js dependencies and builds that server; it does not modify the ComfyUI Python environment.
+## Configuration
 
-## Install
+| Variable | Default | When to set it |
+| --- | --- | --- |
+| `OPENBIO_COMFY_URL` | Unset (discover locally) | Pin this MCP connection to one instance, for example `http://127.0.0.1:8189`. |
+| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | Override the shared registration directory. ComfyUI and the MCP host must use the same path. |
 
-### ComfyUI Manager (recommended)
+Install the extension in every ComfyUI instance you want to edit. Each running backend writes its address under the shared directory. Discovery uses loopback only; remote ComfyUI is not supported.
 
-Open ComfyUI Manager, search for `OpenBio Comfy MCP` or `openbio-comfy-mcp`, select **Install**, and restart ComfyUI. The installed MCP entry point is:
+With several online instances, tools pick the one whose page was focused last. Say “edit the workflow on port 8189” if you need a specific one. `list_instances` shows `instance_id`, status, and connected canvases.
 
-```text
-<ComfyUI>/custom_nodes/openbio-comfy-mcp/dist/openbio-comfy-mcp.mjs
-```
+## Tools
 
-No `npm ci` step is required for a Registry installation.
+| Tool | Effect | Purpose |
+| --- | --- | --- |
+| `list_instances` | Read-only | List local instances and connected canvases. |
+| `inspect_canvas` | Read-only | Inspect the live graph, subgraphs, or specific nodes and groups. |
+| `search_nodes` | Read-only | Search the node types installed in that ComfyUI. |
+| `inspect_node_type` | Read-only | Read the native schema of one `class_type`. |
+| `present_canvas` | UI only | Navigate graphs, select items, optionally fit the view. |
+| `apply_canvas_patch` | Writes the canvas | Apply one atomic, undoable batch of graph edits. |
 
-### Standard source installation
+Typical flow: inspect → search a node type if needed → apply one patch → undo in ComfyUI if the result is wrong.
 
-Clone the repository directly into ComfyUI's `custom_nodes` directory, then install the MCP server dependency and build the bundled entry point.
+Exact operations live in [docs/spec.md](docs/spec.md).
 
-Windows PowerShell:
+## Security
+
+- The MCP process runs with the same OS permissions as the host that launched it.
+- `apply_canvas_patch` can change the open workflow. Review it in your host if you gate write tools.
+- The server opens no listening port. Canvas commands are accepted from loopback only. That is not a general ComfyUI login; do not expose an unauthenticated ComfyUI to untrusted networks.
+- Inspections can include prompts, filenames, and widget values. What happens next follows your MCP host and model provider.
+
+## Troubleshooting
+
+- `NO_LIVE_CANVAS`: open or reload a ComfyUI page and leave it connected.
+- Host shows no tools: confirm Node 20+ is on `PATH`, that the host command is `npx -y openbio-comfy-mcp@latest`, then restart the host.
+- Health route missing: the extension is not loaded. Reinstall under `custom_nodes`, restart ComfyUI, check its console.
+- `STALE_CANVAS`: inspect again and send a new patch.
+- `AMBIGUOUS_INSTANCE`: several instances, no clear focus. Use `list_instances` and pass an `instance_id` or `canvas_id`.
+- `INSTANCE_UNAVAILABLE` / `INSTANCE_NOT_FOUND`: that ComfyUI is down or was restarted. List and inspect again.
+- Port `5173` Vite frontend: custom-node JavaScript does not load there. Use the frontend served by ComfyUI.
+
+## Update and uninstall
+
+Manager users: update the extension in ComfyUI Manager, then restart ComfyUI and reload the page. The MCP host always fetches `@latest` on the next `npx` launch.
+
+Remove the host registration first (Codex: `codex mcp remove openbio-comfy-mcp`), then uninstall the custom node and restart ComfyUI.
+
+## Source install
+
+Use this when you are developing the extension, or Manager is not available.
 
 ```powershell
 $ComfyRoot = "C:\path\to\ComfyUI"
@@ -78,8 +145,6 @@ Set-Location .\openbio-comfy-mcp
 npm ci
 ```
 
-Linux or macOS:
-
 ```bash
 cd /path/to/ComfyUI/custom_nodes
 git clone https://github.com/Open-Bio/openbio-comfy-mcp.git
@@ -87,203 +152,26 @@ cd openbio-comfy-mcp
 npm ci
 ```
 
-Restart ComfyUI after installation, open its UI in a browser, and verify that the extension route is available:
+To keep the Git checkout outside ComfyUI, Junction or symlink it into `custom_nodes`, then run `npm ci` in the checkout. Do not expose the same checkout through more than one custom-node root.
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
-```
-
-The response includes `"ok": true` and the running server's `instance_id`. Replace `8188` with your ComfyUI port when checking another instance.
-
-### Sibling checkout for development
-
-Keep the Git checkout outside ComfyUI and expose it through a link when you want edits to remain in a standalone repository.
-
-Windows PowerShell:
-
-```powershell
-$ComfyRoot = "C:\path\to\ComfyUI"
-$Repo = "C:\path\to\openbio-comfy-mcp"
-
-New-Item -ItemType Junction `
-  -Path "$ComfyRoot\custom_nodes\openbio-comfy-mcp" `
-  -Target $Repo
-
-Set-Location $Repo
-npm ci
-```
-
-Linux or macOS:
-
-```bash
-ln -s /path/to/openbio-comfy-mcp /path/to/ComfyUI/custom_nodes/openbio-comfy-mcp
-cd /path/to/openbio-comfy-mcp
-npm ci
-```
-
-Do not expose the same checkout through more than one custom-node root.
-
-## Connect an MCP host
-
-### Codex
-
-Register the local stdio server with an absolute path:
-
-```powershell
-$Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
-
-codex mcp add openbio-comfy-mcp `
-  -- node "$Repo\dist\openbio-comfy-mcp.mjs"
-
-codex mcp get openbio-comfy-mcp --json
-codex mcp list --json
-```
-
-Restart the Codex client after adding the server. Codex Desktop, the CLI, and the IDE extension share MCP configuration on the same Codex host. See the [official Codex MCP documentation](https://developers.openai.com/codex/mcp).
-
-### Other stdio MCP hosts
-
-For hosts that use an `mcpServers` JSON configuration, adapt this example with an absolute path:
-
-```json
-{
-  "mcpServers": {
-    "openbio-comfy-mcp": {
-      "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"]
-    }
-  }
-}
-```
-
-Configuration keys vary by host. The command must start `dist/openbio-comfy-mcp.mjs`. Local instances are discovered automatically when `OPENBIO_COMFY_URL` is unset.
-
-## Configuration
-
-| Variable | Default | Description |
-| --- | --- | --- |
-| `OPENBIO_COMFY_URL` | Unset (automatic discovery) | Set a local base URL, such as `http://127.0.0.1:8189`, to restrict this MCP connection to one instance. |
-| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | Shared registration directory. Set the same path for ComfyUI and the MCP host when overriding it. |
-
-### Local instances
-
-Install this extension in each ComfyUI instance and register the MCP server once. Each running backend registers its local address and an `instance_id` in the shared directory; instances running under the same operating-system user are discovered on any port. The MCP server checks their health before use. Discovery uses loopback addresses without port scanning; remote ComfyUI instances are not supported.
-
-Registration is refreshed every 5 seconds and removed on normal shutdown. Records older than 30 seconds are ignored. With no current registration records, the MCP server tries `http://127.0.0.1:8188` for compatibility with older extension versions. If your existing MCP configuration sets `OPENBIO_COMFY_URL`, remove that variable and reconnect to enable automatic discovery.
-
-Call `list_instances` to see each instance's `instance_id`, `base_url`, `status` (`online` or `unavailable`), connected `canvases`, and `last_focused_at`. With one online instance, tools select it automatically. With several and no explicit target, tools select the instance whose connected page was most recently focused. Switching back to chat preserves that time; heartbeats do not advance it. Focus times remain in memory only.
-
-You can also specify an instance in chat, for example “edit the workflow on port 8189.” The client uses `list_instances` to find its `instance_id` and passes that to `inspect_canvas`, or inspects a listed `canvas_id`. Explicit targets take priority. If no focus times are available or the latest time is tied across instances, tools return `AMBIGUOUS_INSTANCE` so the target can be specified.
-
-Inspection returns `instance_id`, `canvas_id`, and `revision`. Treat `canvas_id` as an opaque value and pass it back unchanged: it binds subsequent calls to that running instance, including after focus changes, subgraph navigation, or reconnecting the MCP host. Pass the same `canvas_id` to node catalog tools so searches use that instance's installed nodes. An unavailable or restarted target returns an error instead of switching to another instance; list and inspect again to obtain the new target's canvas identity.
-
-## Tools
-
-| Tool | Effect | Purpose |
-| --- | --- | --- |
-| `list_instances` | Read-only | List local instances, their connection status, and connected canvases. |
-| `inspect_canvas` | Read-only | Inspect compact topology, subgraph navigation and ports, or details for exact native node/group refs. |
-| `search_nodes` | Read-only | Search an instance's `/object_info` catalog, selected by `canvas_id` or `instance_id`. |
-| `inspect_node_type` | Read-only | Read one exact `class_type` schema from the instance selected by `canvas_id` or `instance_id`. |
-| `present_canvas` | UI state only | Navigate between native graphs, select and optionally fit their items. |
-| `apply_canvas_patch` | Writes the live canvas | Apply one atomic, undoable batch of typed node, link, group, or subgraph operations. |
-
-Recommended editing flow:
-
-1. Call `inspect_canvas` and keep the returned `instance_id`, `canvas_id`, and `revision`. To choose a specific instance, first use `list_instances` and pass its identity; otherwise the most recently focused instance is selected when unambiguous.
-2. Use `search_nodes` and `inspect_node_type` with that `canvas_id` before adding an unfamiliar node type.
-3. Send one `apply_canvas_patch` with the inspected `canvas_id` and `revision` as `base_revision`.
-4. Optionally call `present_canvas` to select and focus the changed items.
-5. Inspect again. If the result is unwanted, use ComfyUI's native undo command.
-
-For subgraphs, `inspect_canvas` returns `root_graph_id` and a `subgraph_id` on each subgraph node. Pass either native graph ID as `present_canvas.graph_id`, together with the current `canvas_id`; `refs` refer to items in the destination graph. Use the returned canvas identity and inspect again before editing. Native graph IDs are workflow definitions, not installed node types from `/object_info`.
-
-Inside a subgraph, inspection also returns `subgraph.inputs` and `subgraph.outputs`, each with a boundary `node_id` and named `slots`. Use those IDs and slot names with ordinary `connect` and `disconnect` operations. Add, relabel, or remove exposed ports with `add_subgraph_port`, `rename_subgraph_port`, and `remove_subgraph_port`; a relabel changes `label` while preserving the connection `name`. Editing a subgraph definition affects every instance that shares it.
-
-Use `convert_to_subgraph` to wrap explicit `node_ids` and `unpack_subgraph` to expand an instance. Either operation must be last in its patch because native conversion remaps node IDs; inspect again afterward. Each patch, including subgraph edits, remains one native undo transaction.
-
-See [docs/spec.md](docs/spec.md) for the exact public behavior and operation set.
-
-## Frontend development note
-
-The standalone ComfyUI_frontend Vite development server (`pnpm dev`, normally port `5173`) does not load JavaScript extensions supplied by custom nodes. OpenBio Comfy MCP therefore cannot connect to a canvas served only by that development server. Use the frontend served by ComfyUI itself, or build the frontend and launch ComfyUI with that build as its frontend root.
-
-After installing or updating this repository, restart ComfyUI and reload the browser page so the page extension is loaded.
-
-## Security and privacy
-
-- Install MCP servers only from sources you trust. This local server runs with the same operating-system permissions as the MCP host application that launches it.
-- Treat `apply_canvas_patch` as a write-capable tool and review or approve its use in your MCP host. It changes the workflow currently open in the selected page, although the whole patch can be reverted with one native undo.
-- The stdio MCP server opens no network listener. It calls discovered or explicitly configured local ComfyUI HTTP servers.
-- Canvas command requests are accepted from loopback only. This restriction is not a general authentication layer for ComfyUI; do not expose an unauthenticated ComfyUI server to untrusted networks.
-- The bridge exposes typed graph operations, not arbitrary JavaScript, DOM access, filesystem access, shell commands, workflow queueing, or execution.
-- Canvas inspections can include workflow names, paths, node titles, prompts, filenames, sample identifiers, and widget values. Any onward handling follows the privacy policy and configuration of the MCP host and model provider you connect.
-- A disconnected page returns `NO_LIVE_CANVAS`; the system never falls back to editing workflow files in the background.
-
-## Troubleshooting
-
-- `NO_LIVE_CANVAS`: open or reload a ComfyUI page and leave it connected.
-- Tools are missing in the host: verify the absolute `dist/openbio-comfy-mcp.mjs` path and restart the MCP host application. For a source checkout, run `npm ci` first.
-- Health endpoint is missing: verify the repository is directly under `custom_nodes` or linked there, then restart ComfyUI and inspect its console for import errors.
-- `STALE_CANVAS`: call `inspect_canvas` again and build a new patch from the returned revision.
-- `AMBIGUOUS_INSTANCE`: focus times are missing or tied across instances. Use `list_instances`, then pass the intended `instance_id` or listed `canvas_id` to `inspect_canvas`.
-- `INSTANCE_UNAVAILABLE` or `INSTANCE_NOT_FOUND`: the selected instance is unavailable or no longer registered. Use `list_instances` and inspect the intended running instance again; its previous `canvas_id` cannot target a restarted server.
-- `INSTANCE_MISMATCH`: the supplied instance and canvas identities disagree. Use the `instance_id` and `canvas_id` belonging to the same canvas in the listing or inspection.
-- An instance is missing: install the extension in that instance, restart it, and ensure ComfyUI and the MCP host use the same registration directory. Remove `OPENBIO_COMFY_URL` from the MCP configuration if it still fixes the target to one server.
-- Multiple pages are open in one instance: the most recently focused ComfyUI page is the default target within that instance; an unresolved ambiguity is reported instead of guessed.
-- Port `5173` development page does not connect: use a frontend served by the ComfyUI backend as described above.
-
-## Update and uninstall
-
-Update a source installation and its locked Node.js dependencies:
-
-```bash
-git pull --ff-only
-npm ci
-```
-
-Restart ComfyUI and reload its browser page after an update.
-
-To uninstall, first remove the MCP host registration. For Codex:
-
-```powershell
-codex mcp remove openbio-comfy-mcp
-```
-
-Then remove the cloned `openbio-comfy-mcp` directory—or only the Junction/symbolic link for a sibling development checkout—from `ComfyUI/custom_nodes`, and restart ComfyUI.
-
-## Development
-
-Install Node.js dependencies and run the MCP/page-extension tests:
+For local MCP testing against that checkout, you can still launch `node dist/openbio-comfy-mcp.mjs` instead of `npx`.
 
 ```bash
 npm ci
 npm test
 ```
 
-Run the Python relay tests with the same interpreter used by ComfyUI:
+Python relay tests, using the same interpreter as ComfyUI:
 
 ```powershell
 C:\path\to\ComfyUI\.venv\Scripts\python.exe `
   -m pytest --rootdir=tests -c pyproject.toml tests -q
 ```
 
-Repository layout:
-
-```text
-dist/                     Bundled, dependency-free Registry MCP entry point
-mcp_host/                 Node.js stdio MCP server
-openbio_comfy_mcp/        ComfyUI V3 Python relay extension
-scripts/                  Reproducible MCP bundle build
-web/                      Live page extension and canvas bridge
-tests/                    Node.js and Python tests
-docs/spec.md              Public behavior and safety boundaries
-```
-
-Issues and pull requests are welcome. Please keep changes inside the project's documented live-canvas and local-transport boundaries, and run both test suites before submitting.
+The standalone ComfyUI_frontend Vite server (`pnpm dev`, usually port `5173`) does not load custom-node JavaScript. Open the UI that ComfyUI itself serves.
 
 ## License
 
 OpenBio Comfy MCP is released under the [MIT License](LICENSE).
 
-This project uses the official [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) and ComfyUI's documented [V3 extension](https://docs.comfy.org/custom-nodes/v3_migration) and [JavaScript extension](https://docs.comfy.org/custom-nodes/js/javascript_overview) mechanisms.
+This project uses the official [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) and ComfyUI's documented [V3](https://docs.comfy.org/custom-nodes/v3_migration) and [JavaScript extension](https://docs.comfy.org/custom-nodes/js/javascript_overview) APIs.

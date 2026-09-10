@@ -3,72 +3,139 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
 [![许可证：MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![npm](https://img.shields.io/npm/v/openbio-comfy-mcp.svg)](https://www.npmjs.com/package/openbio-comfy-mcp)
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
 [![ComfyUI 0.33.0+](https://img.shields.io/badge/ComfyUI-0.33.0%2B-blue.svg)](https://github.com/Comfy-Org/ComfyUI)
 
-OpenBio Comfy MCP 是一个本地 [Model Context Protocol](https://modelcontextprotocol.io/) 服务器和 ComfyUI V3 扩展，用于检查和编辑当前在 ComfyUI 画布中打开的工作流。它使用 ComfyUI 原生的图、选择、分组、脏状态和撤销机制；不会自动排队、执行或保存工作流。
+让 Cursor、Codex、Claude 或其他本地 AI **查看并修改你 ComfyUI 里当前打开的工作流画布**。
 
-> [!IMPORTANT]
-> 已发布版本可通过 ComfyUI Manager 安装。Registry 包已包含打包好的 MCP 服务器，Manager 用户无需运行 `npm ci`。
+它走 ComfyUI 自己的图、选择、分组和撤销，不会帮你排队、执行或保存。
 
-## 功能
+这不是 [Comfy 官方 MCP](https://docs.comfy.org/agent-tools/mcp)。官方 Cloud MCP 在云端出图，`comfy-mcp` 跑的是工作流文件。本项目改的是你屏幕上正在打开的那张图。
 
-- 通过一个 MCP 连接自动发现任意端口上的本地 ComfyUI 实例。
-- 以紧凑的结构化 MCP 输出检查当前活动画布。
-- 搜索已连接 ComfyUI 中安装的全部节点类型。
-- 检查指定节点类型的完整原生结构定义。
-- 选择并聚焦原生节点或分组，不修改工作流。
-- 添加、删除、连接、断开、配置和移动节点。
-- 添加、更新、适配、移动和删除 ComfyUI 原生分组。
-- 创建和解包原生子图，进入子图编辑节点、连线和对外端口。
-- 将一批修改作为一个原子化、可撤销的 ComfyUI 原生事务执行。
-- 在更改实时画布之前拒绝过期或无效的补丁。
-- 保持 MCP 传输在本机：stdio 服务器不监听端口，画布命令只接受来自回环地址的请求。
+## 可以让 AI 做什么
 
-## 架构
+两边都装好、并且开着一个 ComfyUI 窗口之后，可以这样说：
 
-```text
-MCP Host 应用（Codex 或其他本地 Host）
-        | MCP over stdio
-        v
-Node.js MCP Server
-        | ComfyUI HTTP
-        v
-Python V3 扩展中继
-        | ComfyUI WebSocket 事件
-        v
-浏览器页面扩展 -> 当前 app.canvas.graph
-```
+- 现在画布上有什么？
+- 加一个节点、把这两个连上、挪一下这个组。
+- 搜一下**这台** ComfyUI 里装了哪些节点。
+- 把节点打成原生子图，或再拆开。
 
-浏览器页面是实时图的唯一权威来源。Python 扩展负责将请求与已连接页面关联，Node.js stdio 服务器不保存权威的工作流副本。该扩展不注册 ComfyUI 执行节点，也不会修改 ComfyUI Core、ComfyUI_frontend、Desktop 或工作流文件格式。
-
-## 环境要求
-
-- ComfyUI 0.33.0 或更高版本
-- ComfyUI 运行环境使用 Python 3.10 或更高版本
-- Node.js 20 或更高版本
-- 支持本地 stdio 服务器的 MCP Host 应用
-- 使用工具时保持一个 ComfyUI 浏览器或 Desktop 页面处于打开状态
-
-ComfyUI 扩展本身没有额外的 Python 包依赖。Registry 版本已包含预构建的 MCP 服务器。源码和开发仓库中的 `npm ci` 只安装 Node.js 依赖并构建该服务器，不会修改 ComfyUI 的 Python 环境。
+修改会立刻出现在画布上。一次 ComfyUI 撤销会整批还原。
 
 ## 安装
 
-### ComfyUI Manager（推荐）
+必须做 **两步**。Manager 只装 ComfyUI 这一侧；AI 客户端还要单独接 MCP 服务器。
 
-打开 ComfyUI Manager，搜索 `OpenBio Comfy MCP` 或 `openbio-comfy-mcp`，选择**安装**，然后重启 ComfyUI。安装后的 MCP 入口文件为：
+### 1. 安装 ComfyUI 扩展
 
-```text
-<ComfyUI>/custom_nodes/openbio-comfy-mcp/dist/openbio-comfy-mcp.mjs
+打开 ComfyUI Manager，搜索 `OpenBio Comfy MCP` 或 `openbio-comfy-mcp`，安装后重启 ComfyUI。用工具时请保持浏览器或 Desktop 窗口开着。
+
+扩展没有额外的 Python 依赖。Registry 版本已带打包好的 MCP 服务器。
+
+确认中继可用：
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
 ```
 
-通过 Registry 安装时无需运行 `npm ci`。
+应返回 `"ok": true`。端口不是 `8188` 时换成你的端口。
 
-### 标准源码安装
+### 2. 接到 MCP Host
 
-将仓库直接克隆到 ComfyUI 的 `custom_nodes` 目录，然后安装 MCP 服务器依赖并构建打包入口。
+MCP Host 所用环境的 `PATH` 上要有 Node.js 20+。写发布包即可，不必填本机文件路径：
 
-Windows PowerShell：
+```json
+{
+  "mcpServers": {
+    "openbio-comfy-mcp": {
+      "command": "npx",
+      "args": ["-y", "openbio-comfy-mcp@latest"]
+    }
+  }
+}
+```
+
+#### Codex
+
+```powershell
+codex mcp add openbio-comfy-mcp -- npx -y openbio-comfy-mcp@latest
+codex mcp get openbio-comfy-mcp --json
+```
+
+添加后重启 Codex 客户端。Desktop、CLI 和 IDE 扩展共用同一套配置。参见 [Codex MCP 文档](https://developers.openai.com/codex/mcp)。
+
+#### Cursor
+
+把上面的 JSON 写进 `~/.cursor/mcp.json`（全局）或项目里的 `.cursor/mcp.json`，然后重载 MCP。
+
+#### 其他 stdio Host（Claude Desktop、Claude Code 等）
+
+同样使用 `npx -y openbio-comfy-mcp@latest`。各 Host 的配置键可能不同，命令必须是 `npx`。
+
+本地 ComfyUI 会自动发现。开了多个 ComfyUI 进程，也只需注册一次 MCP。
+
+## 环境要求
+
+- ComfyUI 0.33.0 或更高
+- ComfyUI 运行环境为 Python 3.10 或更高
+- MCP Host 的 PATH 上有 Node.js 20 或更高
+- 能拉起本地 stdio 服务器的 MCP Host
+- 使用工具时保持一个 ComfyUI 页面打开
+
+## 配置
+
+| 变量 | 默认值 | 什么时候设 |
+| --- | --- | --- |
+| `OPENBIO_COMFY_URL` | 不设置（自动发现） | 把这次 MCP 连接钉在某一个实例上，例如 `http://127.0.0.1:8189`。 |
+| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | 覆盖共享注册目录。ComfyUI 和 MCP Host 必须用同一个路径。 |
+
+每个要编辑的 ComfyUI 实例都要装这个扩展。各后端会把本机地址写进共享目录。只发现回环地址，不支持远程 ComfyUI。
+
+多个实例同时在线时，默认选最近获得焦点的页面。需要指定时可以说「改 8189 端口上的工作流」。`list_instances` 会列出 `instance_id`、状态和已连接画布。
+
+## 工具
+
+| 工具 | 影响 | 用途 |
+| --- | --- | --- |
+| `list_instances` | 只读 | 列出本地实例和已连接画布。 |
+| `inspect_canvas` | 只读 | 查看当前图、子图，或指定节点/分组。 |
+| `search_nodes` | 只读 | 搜索该 ComfyUI 已安装的节点类型。 |
+| `inspect_node_type` | 只读 | 读取某个 `class_type` 的原生结构。 |
+| `present_canvas` | 仅界面 | 切换图、选中对象、按需适配视口。 |
+| `apply_canvas_patch` | 写入画布 | 原子化执行一批可撤销的图编辑。 |
+
+常见流程：先检查 → 需要时搜节点类型 → 发一次补丁 → 不满意就在 ComfyUI 里撤销。
+
+完整操作集合见 [docs/spec.md](docs/spec.md)。
+
+## 安全
+
+- MCP 进程的操作系统权限与拉起它的 Host 相同。
+- `apply_canvas_patch` 会改当前打开的工作流。若 Host 会审核写入工具，请打开审核。
+- 服务器不监听端口。画布命令只接受回环请求。这不是 ComfyUI 的登录层；不要把未认证的 ComfyUI 暴露到不可信网络。
+- 检查结果可能包含提示词、文件名和控件值。后续如何处理取决于你的 MCP Host 和模型提供方。
+
+## 故障排查
+
+- `NO_LIVE_CANVAS`：打开或刷新 ComfyUI 页面，并保持连接。
+- Host 里没有工具：确认 PATH 上有 Node 20+，命令是 `npx -y openbio-comfy-mcp@latest`，然后重启 Host。
+- 健康检查路由不存在：扩展没加载。确认装在 `custom_nodes` 下，重启 ComfyUI，看控制台。
+- `STALE_CANVAS`：重新检查，再发新补丁。
+- `AMBIGUOUS_INSTANCE`：多个实例且焦点不明确。先 `list_instances`，再传入 `instance_id` 或 `canvas_id`。
+- `INSTANCE_UNAVAILABLE` / `INSTANCE_NOT_FOUND`：该 ComfyUI 已关掉或刚重启。重新列出并检查。
+- 端口 `5173` 的 Vite 前端：不会加载自定义节点的 JavaScript。请用 ComfyUI 自己提供的前端。
+
+## 更新与卸载
+
+Manager 用户：在 Manager 里更新扩展，重启 ComfyUI 并刷新页面。MCP Host 下次 `npx` 时会拉取 `@latest`。
+
+先删 Host 注册（Codex：`codex mcp remove openbio-comfy-mcp`），再卸载自定义节点，最后重启 ComfyUI。
+
+## 源码安装
+
+开发本扩展，或无法使用 Manager 时：
 
 ```powershell
 $ComfyRoot = "C:\path\to\ComfyUI"
@@ -78,8 +145,6 @@ Set-Location .\openbio-comfy-mcp
 npm ci
 ```
 
-Linux 或 macOS：
-
 ```bash
 cd /path/to/ComfyUI/custom_nodes
 git clone https://github.com/Open-Bio/openbio-comfy-mcp.git
@@ -87,203 +152,26 @@ cd openbio-comfy-mcp
 npm ci
 ```
 
-安装后重启 ComfyUI，在浏览器中打开界面，并确认扩展路由可用：
+Git 仓库放在 ComfyUI 外面时，用 Junction 或符号链接挂到 `custom_nodes`，再在仓库里运行 `npm ci`。不要把同一个仓库挂到多个自定义节点目录。
 
-```powershell
-Invoke-RestMethod http://127.0.0.1:8188/openbio-comfy-mcp/health
-```
-
-响应包含 `"ok": true` 和当前服务器的 `instance_id`。检查其他实例时，将 `8188` 替换为对应的 ComfyUI 端口。
-
-### 用于开发的同级仓库
-
-如需让修改保留在独立仓库中，可以把 Git 仓库放在 ComfyUI 外部，再通过链接暴露给 ComfyUI。
-
-Windows PowerShell：
-
-```powershell
-$ComfyRoot = "C:\path\to\ComfyUI"
-$Repo = "C:\path\to\openbio-comfy-mcp"
-
-New-Item -ItemType Junction `
-  -Path "$ComfyRoot\custom_nodes\openbio-comfy-mcp" `
-  -Target $Repo
-
-Set-Location $Repo
-npm ci
-```
-
-Linux 或 macOS：
-
-```bash
-ln -s /path/to/openbio-comfy-mcp /path/to/ComfyUI/custom_nodes/openbio-comfy-mcp
-cd /path/to/openbio-comfy-mcp
-npm ci
-```
-
-不要通过多个自定义节点根目录重复暴露同一个仓库。
-
-## 连接 MCP Host
-
-### Codex
-
-使用绝对路径注册本地 stdio 服务器：
-
-```powershell
-$Repo = (Resolve-Path "C:\path\to\openbio-comfy-mcp").Path
-
-codex mcp add openbio-comfy-mcp `
-  -- node "$Repo\dist\openbio-comfy-mcp.mjs"
-
-codex mcp get openbio-comfy-mcp --json
-codex mcp list --json
-```
-
-添加服务器后重启 Codex 客户端。同一 Codex 主机上的 Codex Desktop、CLI 和 IDE 扩展会共享 MCP 配置。参见 [Codex MCP 官方文档](https://developers.openai.com/codex/mcp)。
-
-### 其他 stdio MCP Host
-
-对于采用 `mcpServers` JSON 配置的 Host，请将下面示例中的路径替换为绝对路径：
-
-```json
-{
-  "mcpServers": {
-    "openbio-comfy-mcp": {
-      "command": "node",
-      "args": ["C:\\path\\to\\openbio-comfy-mcp\\dist\\openbio-comfy-mcp.mjs"]
-    }
-  }
-}
-```
-
-不同 Host 的配置键可能不同。命令必须启动 `dist/openbio-comfy-mcp.mjs`。未设置 `OPENBIO_COMFY_URL` 时，会自动发现本地实例。
-
-## 配置
-
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `OPENBIO_COMFY_URL` | 不设置（自动发现） | 设置本地基础地址，例如 `http://127.0.0.1:8189`，将此 MCP 连接固定到一个实例。 |
-| `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | 共享注册目录。覆盖时，ComfyUI 和 MCP Host 必须设置为同一个路径。 |
-
-### 本地多实例
-
-在每个 ComfyUI 实例中安装本扩展，只需注册一个 MCP 服务器。各后端启动后将本地地址和 `instance_id` 写入共享目录；同一操作系统用户下运行的实例，无论使用什么端口都能被发现。MCP 服务器在使用前检查实例健康状态。发现过程通过回环地址访问，不扫描端口；暂不支持远程 ComfyUI。
-
-注册记录每 5 秒更新，正常退出时删除自身记录，超过 30 秒未更新的记录会被忽略。没有有效注册记录时，MCP 服务器仍尝试连接 `http://127.0.0.1:8188`，以兼容旧版扩展。如果现有 MCP 配置设置了 `OPENBIO_COMFY_URL`，需移除该变量并重新连接，才能启用自动发现。
-
-调用 `list_instances` 可查看各实例的 `instance_id`、`base_url`、`status`（`online` 或 `unavailable`）、已连接的 `canvases` 和 `last_focused_at`。只有一个在线实例时自动选择；有多个且未指定目标时，默认选择已连接页面中最后获得焦点的实例。切回聊天框后仍保留该时间，心跳不会更新它。焦点时间仅保存在内存中。
-
-也可以在聊天中指定实例，例如“修改 8189 端口上的工作流”。客户端先用 `list_instances` 找到对应的 `instance_id`，再传给 `inspect_canvas`，或直接检查列表中的 `canvas_id`；明确指定的目标优先。如果没有可用的焦点时间，或多个实例的最新时间相同，则返回 `AMBIGUOUS_INSTANCE`，需要指定目标。
-
-检查结果返回 `instance_id`、`canvas_id` 和 `revision`。将 `canvas_id` 作为不透明标识原样传回，即可把后续调用绑定到当前运行的实例；焦点变化、进入子图或重新连接 MCP Host 后仍保持绑定。节点目录工具传入同一个 `canvas_id`，即可查询该实例实际安装的节点。目标下线或重启时会返回错误，不会自动切换到其他实例；需重新列出并检查，获取新目标的画布标识。
-
-## 工具
-
-| 工具 | 影响 | 用途 |
-| --- | --- | --- |
-| `list_instances` | 只读 | 列出本地实例、连接状态及已连接的画布。 |
-| `inspect_canvas` | 只读 | 检查紧凑拓扑、子图导航与端口，或查看指定原生节点/分组引用的详情。 |
-| `search_nodes` | 只读 | 通过 `canvas_id` 或 `instance_id` 选择实例，搜索其 `/object_info` 目录。 |
-| `inspect_node_type` | 只读 | 通过 `canvas_id` 或 `instance_id` 选择实例，读取一个准确 `class_type` 的完整原生结构。 |
-| `present_canvas` | 仅界面状态 | 在原生图之间导航，选择并按需聚焦其中的对象。 |
-| `apply_canvas_patch` | 写入实时画布 | 原子化执行一批可撤销的节点、连线、分组或子图操作。 |
-
-推荐的编辑流程：
-
-1. 调用 `inspect_canvas`，保存返回的 `instance_id`、`canvas_id` 和 `revision`。如需指定实例，先用 `list_instances` 获取并传入目标标识；否则在无歧义时默认选择最近获得焦点的实例。
-2. 添加不熟悉的节点类型前，向 `search_nodes` 和 `inspect_node_type` 传入该 `canvas_id`。
-3. 发送一个 `apply_canvas_patch`，使用检查结果中的 `canvas_id`，并将 `revision` 作为 `base_revision`。
-4. 可选调用 `present_canvas`，选择并聚焦已修改对象。
-5. 再次检查；如果结果不符合预期，使用 ComfyUI 原生撤销命令。
-
-操作子图时，`inspect_canvas` 会返回 `root_graph_id`，并在子图节点上提供 `subgraph_id`。将任一原生图 ID 作为 `present_canvas.graph_id`，同时传入当前 `canvas_id`；`refs` 指向目标图中的对象。导航后使用返回的新画布标识，再次检查后编辑。原生图 ID 对应工作流定义，不是 `/object_info` 中安装的节点类型。
-
-进入子图后，检查结果还包含 `subgraph.inputs` 和 `subgraph.outputs`，各自提供边界 `node_id` 和命名 `slots`。使用这些 ID 和端口名即可通过原有 `connect`、`disconnect` 操作连接或断开边界。用 `add_subgraph_port`、`rename_subgraph_port`、`remove_subgraph_port` 添加、更改显示标签或删除对外端口；更改标签只修改 `label`，保留用于连线的 `name`。对子图定义的编辑会影响共享该定义的所有实例。
-
-使用 `convert_to_subgraph` 将明确指定的 `node_ids` 封装成子图，使用 `unpack_subgraph` 解包实例。这两种操作必须放在补丁最后，因为原生转换会重新映射节点 ID，之后需再次检查。包含子图编辑的补丁同样只需一次原生撤销即可还原。
-
-准确的公开行为和操作集合见 [docs/spec.md](docs/spec.md)。
-
-## 前端开发说明
-
-独立的 ComfyUI_frontend Vite 开发服务器（`pnpm dev`，通常为端口 `5173`）不会加载自定义节点提供的 JavaScript 扩展。因此 OpenBio Comfy MCP 无法连接到只由该开发服务器提供的画布。请使用 ComfyUI 后端自身提供的前端，或者先构建前端，再让 ComfyUI 使用该构建作为前端根目录。
-
-安装或更新本仓库后，应重启 ComfyUI 并刷新浏览器页面，使页面扩展被加载。
-
-## 安全与隐私
-
-- 只安装来自可信来源的 MCP 服务器。本地服务器与启动它的 MCP Host 应用具有相同的操作系统权限。
-- 将 `apply_canvas_patch` 视为具有写入能力的工具，并在 MCP Host 中检查或批准它的使用。它会修改所选页面当前打开的工作流，但整个补丁可以通过一次原生撤销还原。
-- stdio MCP 服务器不监听网络端口，只会访问自动发现或明确配置的本地 ComfyUI HTTP 服务器。
-- 画布命令只接受来自回环地址的请求。这个限制并不是 ComfyUI 的通用身份验证层；不要把未认证的 ComfyUI 服务器暴露给不可信网络。
-- 本桥接只暴露类型化图操作，不提供任意 JavaScript、DOM、文件系统、Shell、工作流排队或执行能力。
-- 画布检查可能包含工作流名称、路径、节点标题、提示词、文件名、样本标识和控件值。后续数据处理取决于所连接 MCP Host 和模型提供方的隐私政策及配置。
-- 页面断开时返回 `NO_LIVE_CANVAS`；系统不会退回到后台修改工作流文件。
-
-## 故障排查
-
-- `NO_LIVE_CANVAS`：打开或刷新一个 ComfyUI 页面，并保持连接。
-- Host 中没有工具：检查 `dist/openbio-comfy-mcp.mjs` 的绝对路径，然后重启 MCP Host 应用。源码仓库需先运行 `npm ci`。
-- 健康检查路由不存在：确认仓库位于 `custom_nodes` 下或已正确链接，然后重启 ComfyUI 并检查控制台导入错误。
-- `STALE_CANVAS`：重新调用 `inspect_canvas`，使用新返回的版本构建补丁。
-- `AMBIGUOUS_INSTANCE`：实例焦点时间缺失或最新时间相同。调用 `list_instances`，再将目标 `instance_id` 或列表中的 `canvas_id` 传给 `inspect_canvas`。
-- `INSTANCE_UNAVAILABLE` 或 `INSTANCE_NOT_FOUND`：选定实例不可用或已不在注册目录中。调用 `list_instances`，重新检查目标运行实例；旧 `canvas_id` 不能指向重启后的服务器。
-- `INSTANCE_MISMATCH`：传入的实例与画布标识不一致。请使用列出或检查结果中同一画布对应的 `instance_id` 和 `canvas_id`。
-- 找不到实例：在该实例安装扩展并重启，确认 ComfyUI 与 MCP Host 使用同一个注册目录。如果 MCP 配置中的 `OPENBIO_COMFY_URL` 仍固定到一个服务器，请移除该变量。
-- 同一实例同时打开多个页面：默认使用该实例内最近获得焦点的 ComfyUI 页面；无法消除歧义时会返回错误，而不会猜测目标。
-- 端口 `5173` 的开发页面无法连接：按上面的说明改用由 ComfyUI 后端提供的前端。
-
-## 更新与卸载
-
-更新源码安装及其锁定的 Node.js 依赖：
-
-```bash
-git pull --ff-only
-npm ci
-```
-
-更新后重启 ComfyUI，并刷新浏览器页面。
-
-卸载时，先删除 MCP Host 注册。Codex 用户运行：
-
-```powershell
-codex mcp remove openbio-comfy-mcp
-```
-
-然后从 `ComfyUI/custom_nodes` 删除克隆的 `openbio-comfy-mcp` 目录；如果使用同级开发仓库，则只删除 Junction/符号链接。最后重启 ComfyUI。
-
-## 开发
-
-安装 Node.js 依赖并运行 MCP/页面扩展测试：
+对本仓库做本地 MCP 调试时，可以继续用 `node dist/openbio-comfy-mcp.mjs`，不必走 `npx`。
 
 ```bash
 npm ci
 npm test
 ```
 
-使用运行 ComfyUI 的同一个解释器执行 Python 中继测试：
+Python 中继测试请用 ComfyUI 同一个解释器：
 
 ```powershell
 C:\path\to\ComfyUI\.venv\Scripts\python.exe `
   -m pytest --rootdir=tests -c pyproject.toml tests -q
 ```
 
-仓库结构：
-
-```text
-dist/                     Registry 使用的无外部依赖 MCP 打包入口
-mcp_host/                 Node.js stdio MCP 服务器
-openbio_comfy_mcp/        ComfyUI V3 Python 中继扩展
-scripts/                  可复现的 MCP bundle 构建脚本
-web/                      实时页面扩展和画布桥接
-tests/                    Node.js 和 Python 测试
-docs/spec.md              公开行为和安全边界
-```
-
-欢迎提交 Issue 和 Pull Request。请让修改保持在项目文档定义的实时画布和本地传输边界内，并在提交前运行两套测试。
+独立的 ComfyUI_frontend Vite 开发服务器（`pnpm dev`，通常是 `5173`）不会加载自定义节点的 JavaScript。请打开 ComfyUI 自己提供的界面。
 
 ## 许可证
 
 OpenBio Comfy MCP 使用 [MIT License](LICENSE) 发布。
 
-本项目使用官方 [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)，并采用 ComfyUI 文档中的 [V3 扩展](https://docs.comfy.org/custom-nodes/v3_migration)和 [JavaScript 扩展](https://docs.comfy.org/custom-nodes/js/javascript_overview)机制。
+本项目使用官方 [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk)，以及 ComfyUI 文档中的 [V3](https://docs.comfy.org/custom-nodes/v3_migration) 和 [JavaScript 扩展](https://docs.comfy.org/custom-nodes/js/javascript_overview)接口。

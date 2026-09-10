@@ -1,9 +1,9 @@
 {
   "name": "openbio-comfy-mcp",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Local MCP bridge for inspecting and editing a live ComfyUI canvas.",
+  "version": "0.1.1",
+  "description": "Let an AI inspect and edit the workflow currently open on your ComfyUI canvas.",
   "license": "MIT",
+  "author": "Open-Bio",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Open-Bio/openbio-comfy-mcp.git"
@@ -16,15 +16,25 @@
     "comfyui",
     "mcp",
     "model-context-protocol",
-    "openbio"
+    "openbio",
+    "cursor",
+    "codex",
+    "claude"
   ],
   "type": "module",
   "bin": {
-    "openbio-comfy-mcp": "./dist/openbio-comfy-mcp.mjs"
+    "openbio-comfy-mcp": "dist/openbio-comfy-mcp.mjs"
+  },
+  "files": [
+    "dist/openbio-comfy-mcp.mjs"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "build": "node scripts/build.mjs",
     "prepare": "npm run build",
+    "prepublishOnly": "npm run build",
     "test": "node --test",
     "test:mcp": "node --test tests/mcp_host.test.mjs tests/search_nodes.test.mjs"
   },
