@@ -1,7 +1,7 @@
 {
   "name": "openbio-comfy-mcp",
-  "version": "0.1.1",
-  "description": "Let an AI inspect and edit the workflow currently open on your ComfyUI canvas.",
+  "version": "0.1.2",
+  "description": "Let an AI inspect, edit, and queue the workflow currently open on your ComfyUI canvas.",
   "license": "MIT",
   "author": "Open-Bio",
   "repository": {

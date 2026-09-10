@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openbio-comfy-mcp"
-description = "Let an AI inspect and edit the workflow currently open on your ComfyUI canvas. After install, add npx -y openbio-comfy-mcp@latest to Cursor, Codex, or Claude."
-version = "0.1.1"
+description = "Let an AI inspect, edit, and queue the workflow currently open on your ComfyUI canvas. After install, add npx -y openbio-comfy-mcp@latest to Cursor, Codex, or Claude."
+version = "0.1.2"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
