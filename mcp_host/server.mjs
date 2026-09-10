@@ -6,6 +6,7 @@ import {
 
 import { McpHostError, unavailableError } from "./errors.mjs";
 import { createInstanceRouter } from "./instances.mjs";
+import { inspectPrompt, waitForPrompt } from "./prompt.mjs";
 import { inspectNodeType, searchNodes } from "./search_nodes.mjs";
 
 const NODE_REFERENCE_SCHEMA = { type: ["string", "integer"] };
@@ -345,6 +346,60 @@ const TOOL_DEFINITIONS = [
       openWorldHint: false,
     },
   },
+  {
+    name: "queue_canvas",
+    description: "Queue the live ComfyUI canvas using the same path as the Queue button, including beforeQueued seed widgets. Returns prompt_id and prompt_ids immediately; it does not wait for execution.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        canvas_id: { type: "string" },
+        base_revision: {
+          type: "string",
+          description: "Revision from inspect_canvas. If set and stale, the queue is rejected.",
+        },
+        batch_count: { type: "integer", minimum: 1, default: 1 },
+      },
+      required: ["canvas_id"],
+      additionalProperties: false,
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    },
+  },
+  {
+    name: "inspect_prompt",
+    description: "Read the status of a queued prompt and, when finished, its output filenames, local paths, and view URLs. Failed runs are status error, not completed.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        instance_id: INSTANCE_ID_SCHEMA,
+        canvas_id: { type: "string", description: "Use the instance that owns this inspected canvas." },
+        prompt_id: { type: "string", minLength: 1 },
+      },
+      required: ["prompt_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
+  {
+    name: "wait_for_prompt",
+    description: "Poll inspect_prompt until the prompt completes or fails, or the timeout elapses. Does not hold the live-canvas relay.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        instance_id: INSTANCE_ID_SCHEMA,
+        canvas_id: { type: "string", description: "Use the instance that owns this inspected canvas." },
+        prompt_id: { type: "string", minLength: 1 },
+        timeout_seconds: { type: "number", minimum: 1, maximum: 600, default: 120 },
+      },
+      required: ["prompt_id"],
+      additionalProperties: false,
+    },
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
 ];
 
 function toolResult(value) {
@@ -416,7 +471,7 @@ export function createMcpServer({
     { name: "openbio-comfy-mcp", version: "0.1.0" },
     {
       capabilities: { tools: {} },
-      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to navigate between live graphs or change selection and viewport; its optional graph_id accepts a node's subgraph_id or root_graph_id from inspection. Pass the current canvas_id and refs belonging to the destination graph, then use the returned canvas_id and inspect again after navigation. Native graph IDs are not installed class_type values. Read subgraph boundary node IDs and slot names from inspection and reuse connect/disconnect for boundary links. Subgraph edits affect the shared definition and all its instances. convert_to_subgraph and unpack_subgraph must be the last operation in a patch; inspect again afterward for remapped IDs. Each successful patch is one native ComfyUI undo transaction. The bridge never queues or executes a workflow and never saves it automatically. If the canvas is stale, inspect again instead of retrying the old patch. Use list_instances to discover local ComfyUI instances and their canvases. Without an explicit target, tools use the online instance with the most recent reported last_focused_at, even after focus returns to chat. If focus times are unavailable or tied, choose instance_id using list_instances. An explicit instance_id or canvas_id takes priority. Reuse the returned opaque canvas_id unchanged for all subsequent presentation and editing, including after navigation. Use that canvas_id with search_nodes and inspect_node_type to query the same instance. Canvas IDs include process identity: if an instance restarts, explicitly inspect the new instance; never retry a write on a different instance.",
+      instructions: "Call inspect_canvas without refs for a compact live topology, then pass its native node or group refs back only when details are needed. Use search_nodes to find an installed class_type, then call inspect_node_type when its complete native schema is needed. Before applying a patch, reuse the inspection's canvas_id and revision as base_revision. Call present_canvas without a revision to navigate between live graphs or change selection and viewport; its optional graph_id accepts a node's subgraph_id or root_graph_id from inspection. Pass the current canvas_id and refs belonging to the destination graph, then use the returned canvas_id and inspect again after navigation. Native graph IDs are not installed class_type values. Read subgraph boundary node IDs and slot names from inspection and reuse connect/disconnect for boundary links. Subgraph edits affect the shared definition and all its instances. convert_to_subgraph and unpack_subgraph must be the last operation in a patch; inspect again afterward for remapped IDs. Each successful patch is one native ComfyUI undo transaction. To run the live canvas, call queue_canvas with the current canvas_id; optionally pass base_revision. It returns prompt_id and prompt_ids immediately and never saves the workflow. Then call wait_for_prompt, or poll inspect_prompt, for status, output paths, or an error. If the canvas is stale, inspect again instead of retrying the old patch. Use list_instances to discover local ComfyUI instances and their canvases. Without an explicit target, tools use the online instance with the most recent reported last_focused_at, even after focus returns to chat. If focus times are unavailable or tied, choose instance_id using list_instances. An explicit instance_id or canvas_id takes priority. Reuse the returned opaque canvas_id unchanged for all subsequent presentation and editing, including after navigation. Use that canvas_id with search_nodes and inspect_node_type to query the same instance. Canvas IDs include process identity: if an instance restarts, explicitly inspect the new instance; never retry a write on a different instance.",
     },
   );
 
@@ -430,7 +485,7 @@ export function createMcpServer({
       if (name === "list_instances") {
         return toolResult(await router.listInstances());
       }
-      if (name === "inspect_canvas" || name === "present_canvas" || name === "apply_canvas_patch") {
+      if (name === "inspect_canvas" || name === "present_canvas" || name === "apply_canvas_patch" || name === "queue_canvas") {
         const instance = await router.resolve(arguments_);
         return await relayCommand(name, arguments_, { instance, router, fetchImpl });
       }
@@ -442,6 +497,16 @@ export function createMcpServer({
       if (name === "inspect_node_type") {
         const instance = await router.resolve(arguments_);
         const value = await inspectNodeType(arguments_, { baseUrl: instance.base_url, fetchImpl });
+        return toolResult(router.bindResult(instance, value));
+      }
+      if (name === "inspect_prompt") {
+        const instance = await router.resolve(arguments_);
+        const value = await inspectPrompt(arguments_, { baseUrl: instance.base_url, fetchImpl });
+        return toolResult(router.bindResult(instance, value));
+      }
+      if (name === "wait_for_prompt") {
+        const instance = await router.resolve(arguments_);
+        const value = await waitForPrompt(arguments_, { baseUrl: instance.base_url, fetchImpl });
         return toolResult(router.bindResult(instance, value));
       }
     } catch (error) {

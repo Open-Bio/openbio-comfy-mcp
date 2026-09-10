@@ -64,6 +64,67 @@ export class CanvasBridgeError extends Error {
   }
 }
 
+function queuedPrompt(result) {
+  if (result && typeof result === "object") {
+    const nodeErrors = result.node_errors ?? result.nodeErrors;
+    if (nodeErrors && typeof nodeErrors === "object" && !Array.isArray(nodeErrors)
+      && Object.keys(nodeErrors).length > 0) {
+      throw bridgeError("queue_rejected", "ComfyUI rejected the graph", { node_errors: nodeErrors });
+    }
+    const promptId = result.prompt_id ?? result.promptId;
+    if (typeof promptId === "string" && promptId) {
+      return {
+        prompt_id: promptId,
+        ...(result.number === undefined ? {} : { number: result.number }),
+      };
+    }
+  }
+  throw bridgeError("queue_rejected", "ComfyUI did not return a prompt_id");
+}
+
+function graphNodes(graph, nodes = []) {
+  for (const node of graph?.nodes ?? []) {
+    if (node?.subgraph) graphNodes(node.subgraph, nodes);
+    nodes.push(node);
+  }
+  return nodes;
+}
+
+function runBeforeQueued(app) {
+  const root = app.rootGraph ?? app.graph?.rootGraph ?? app.canvas?.graph;
+  for (const node of graphNodes(root)) {
+    for (const widget of node.widgets ?? []) {
+      widget.beforeQueued?.({ isPartialExecution: false });
+    }
+  }
+}
+
+async function nativeQueue(app, api, batchCount) {
+  const queueApi = api ?? app.api;
+  if (typeof app.graphToPrompt !== "function" || typeof queueApi?.queuePrompt !== "function") {
+    throw bridgeError("queue_unavailable", "ComfyUI queuePrompt is not available on this page");
+  }
+  const queued = [];
+  try {
+    for (let index = 0; index < batchCount; index += 1) {
+      runBeforeQueued(app);
+      queued.push(queuedPrompt(await queueApi.queuePrompt(0, await app.graphToPrompt())));
+    }
+  } catch (error) {
+    if (error instanceof CanvasBridgeError) throw error;
+    throw bridgeError(
+      "queue_rejected",
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const last = queued.at(-1);
+  return {
+    prompt_id: last.prompt_id,
+    prompt_ids: queued.map((item) => item.prompt_id),
+    ...(last.number === undefined ? {} : { number: last.number }),
+  };
+}
+
 function bridgeError(code, message, details) {
   return new CanvasBridgeError(code, message, details);
 }
@@ -770,7 +831,7 @@ function detailedGroup(graph, group) {
   };
 }
 
-export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
+export function createLiveCanvas(app, LiteGraph, { pageId, api } = {}) {
   const canvas = app.canvas;
   const graph = canvas.graph;
   const rootGraph = graph.rootGraph ?? graph;
@@ -935,6 +996,45 @@ export function createLiveCanvas(app, LiteGraph, { pageId } = {}) {
         canvas_id: identity.canvas_id,
         selection: canonicalSelection(canvas, graph),
         viewport: canonicalViewport(canvas),
+      };
+    },
+
+    async queueCanvas(payload = {}) {
+      if (
+        app.canvas !== canvas
+        || canvas.graph !== graph
+        || app.extensionManager.workflow.activeWorkflow !== workflow
+      ) {
+        throw bridgeError("canvas_changed", "The active ComfyUI canvas changed; inspect it again");
+      }
+      if (payload.canvas_id !== identity.canvas_id) {
+        throw bridgeError("canvas_mismatch", "The queue targets a different ComfyUI canvas", {
+          expected: identity.canvas_id,
+          received: payload.canvas_id,
+        });
+      }
+      const snapshot = clone(rootGraph.serialize());
+      const currentRevision = revisionOf(snapshot);
+      if (payload.base_revision !== undefined && payload.base_revision !== currentRevision) {
+        throw bridgeError("stale_revision", "The ComfyUI canvas changed; inspect it again", {
+          expected: currentRevision,
+          received: payload.base_revision,
+        });
+      }
+      let batchCount = 1;
+      if (payload.batch_count !== undefined) {
+        if (!Number.isInteger(payload.batch_count) || payload.batch_count < 1) {
+          throw bridgeError("invalid_queue", "batch_count must be a positive integer");
+        }
+        batchCount = payload.batch_count;
+      }
+      const queued = await nativeQueue(app, api, batchCount);
+      return {
+        canvas_id: identity.canvas_id,
+        revision: currentRevision,
+        prompt_id: queued.prompt_id,
+        prompt_ids: queued.prompt_ids,
+        ...(queued.number === undefined ? {} : { number: queued.number }),
       };
     },
 

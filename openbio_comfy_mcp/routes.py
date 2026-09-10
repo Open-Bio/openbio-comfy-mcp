@@ -7,9 +7,11 @@ from typing import Any
 
 from aiohttp import web
 
+from .prompt import inspect_prompt_queue
 from .relay import (
     COMMAND_ROUTE,
     HEALTH_ROUTE,
+    PROMPT_ROUTE,
     REPLY_ROUTE,
     SESSION_ROUTE,
     Relay,
@@ -17,13 +19,17 @@ from .relay import (
 )
 
 
-def is_loopback_address(address: str | None) -> bool:
+def is_local_address(address: str | None) -> bool:
     if address is None:
         return False
     try:
-        return ipaddress.ip_address(address.split("%", 1)[0]).is_loopback
+        host = ipaddress.ip_address(address.split("%", 1)[0])
     except ValueError:
         return False
+    mapped = getattr(host, "ipv4_mapped", None)
+    if mapped is not None:
+        host = mapped
+    return host.is_loopback or host.is_private
 
 
 def _error_response(
@@ -76,17 +82,26 @@ def _required_object(body: dict[str, Any], field: str) -> dict[str, Any]:
 
 class RelayAPI:
     def __init__(
-        self, relay: Relay, *, command_timeout: float = 10.0, instance_id: str | None = None,
+        self,
+        relay: Relay,
+        *,
+        command_timeout: float = 10.0,
+        instance_id: str | None = None,
+        prompt_queue: Any = None,
+        folder_paths: Any = None,
     ) -> None:
         self._relay = relay
         self._command_timeout = command_timeout
         self._instance_id = instance_id
+        self._prompt_queue = prompt_queue
+        self._folder_paths = folder_paths
 
     def register(self, routes: web.RouteTableDef) -> None:
         routes.post(SESSION_ROUTE)(self.session)
         routes.post(COMMAND_ROUTE)(self.command)
         routes.post(REPLY_ROUTE)(self.reply)
         routes.get(HEALTH_ROUTE)(self.health)
+        routes.get(PROMPT_ROUTE)(self.prompt)
 
     async def session(self, request: web.Request) -> web.Response:
         try:
@@ -123,10 +138,10 @@ class RelayAPI:
         return web.json_response({"ok": True})
 
     async def command(self, request: web.Request) -> web.Response:
-        if not is_loopback_address(request.remote):
+        if not is_local_address(request.remote):
             return _error_response(
                 code="FORBIDDEN",
-                message="Canvas commands are accepted from loopback only.",
+                message="Canvas commands are accepted from loopback and private LAN addresses only.",
                 status=403,
             )
         try:
@@ -205,8 +220,47 @@ class RelayAPI:
             )
         return web.json_response({"ok": True})
 
+    def _prompt_lookup(self) -> tuple[Any, Any]:
+        queue = self._prompt_queue
+        folder_paths = self._folder_paths
+        if queue is None:
+            from server import PromptServer
+
+            queue = PromptServer.instance.prompt_queue
+        if folder_paths is None:
+            import folder_paths as folder_paths_module
+
+            folder_paths = folder_paths_module
+        return queue, folder_paths
+
+    async def prompt(self, request: web.Request) -> web.Response:
+        if not is_local_address(request.remote):
+            return _error_response(
+                code="FORBIDDEN",
+                message="Prompt status is accepted from loopback and private LAN addresses only.",
+                status=403,
+            )
+        prompt_id = request.match_info.get("prompt_id")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            return _error_response(
+                code="INVALID_REQUEST",
+                message="Prompt status requires a prompt_id.",
+                status=400,
+            )
+        queue, folder_paths = self._prompt_lookup()
+        result = inspect_prompt_queue(
+            prompt_id,
+            queue=queue,
+            folder_paths=folder_paths,
+        )
+        return web.json_response({
+            "ok": True,
+            "result": result,
+            **({"instance_id": self._instance_id} if self._instance_id is not None else {}),
+        })
+
     async def health(self, request: web.Request) -> web.Response:
-        if self._instance_id is not None and is_loopback_address(request.remote):
+        if self._instance_id is not None and is_local_address(request.remote):
             return web.json_response({
                 "ok": True,
                 "instance_id": self._instance_id,

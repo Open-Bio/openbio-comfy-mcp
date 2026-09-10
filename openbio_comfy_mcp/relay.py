@@ -15,6 +15,7 @@ SESSION_ROUTE = "/openbio-comfy-mcp/session"
 COMMAND_ROUTE = "/openbio-comfy-mcp/command"
 REPLY_ROUTE = "/openbio-comfy-mcp/reply"
 HEALTH_ROUTE = "/openbio-comfy-mcp/health"
+PROMPT_ROUTE = "/openbio-comfy-mcp/prompt/{prompt_id}"
 
 SendEvent = Callable[[str, dict[str, Any], str], Awaitable[None] | None]
 Clock = Callable[[], float]

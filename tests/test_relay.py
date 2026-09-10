@@ -741,12 +741,12 @@ def test_reply_route_rejects_invalid_envelopes_before_matching_a_request():
     asyncio.run(exercise())
 
 
-def test_command_route_rejects_non_loopback_callers():
+def test_command_route_rejects_public_callers_and_accepts_private_lan():
     relay = Relay(send_event=lambda event, data, sid: None)
     api = RelayAPI(relay)
 
     class RemoteRequest:
-        remote = "192.0.2.10"
+        remote = "8.8.8.8"
 
     response = asyncio.run(api.command(RemoteRequest()))
     assert response.status == 403
@@ -754,9 +754,19 @@ def test_command_route_rejects_non_loopback_callers():
         "ok": False,
         "error": {
             "code": "FORBIDDEN",
-            "message": "Canvas commands are accepted from loopback only.",
+            "message": "Canvas commands are accepted from loopback and private LAN addresses only.",
         },
     }
+
+    class LanRequest:
+        remote = "192.168.1.13"
+
+        async def json(self):
+            return {}
+
+    lan = asyncio.run(api.command(LanRequest()))
+    assert lan.status == 400
+    assert json.loads(lan.text)["error"]["code"] == "INVALID_REQUEST"
 
 
 def test_health_exposes_only_live_canvases_to_loopback_callers():
@@ -796,7 +806,10 @@ def test_health_exposes_only_live_canvases_to_loopback_callers():
             "href": "http://127.0.0.1:8189/#a",
         }],
     }
-    Request.remote = "192.0.2.10"
+    Request.remote = "192.168.1.13"
+    response = asyncio.run(api.health(Request()))
+    assert json.loads(response.text)["canvases"][0]["canvas_id"] == "canvas-live"
+    Request.remote = "8.8.8.8"
     response = asyncio.run(api.health(Request()))
     assert json.loads(response.text) == {"ok": True}
 
@@ -870,3 +883,63 @@ def test_command_rejects_reused_port_identity_before_dispatch():
     assert response.status == 409
     assert json.loads(response.text)["error"]["code"] == "INSTANCE_MISMATCH"
     assert sent == []
+
+
+def test_prompt_route_maps_history_from_loopback_and_rejects_non_loopback(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+
+    class Queue:
+        def get_current_queue(self):
+            return [], []
+
+        def get_history(self, prompt_id=None):
+            return {
+                "prompt-9": {
+                    "outputs": {
+                        "9": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}
+                    }
+                }
+            }
+
+    class FolderPaths:
+        def get_directory_by_type(self, file_type):
+            return str(output) if file_type == "output" else None
+
+    relay = Relay(send_event=lambda event, data, sid: None)
+    api = RelayAPI(relay, prompt_queue=Queue(), folder_paths=FolderPaths())
+    routes = web.RouteTableDef()
+    api.register(routes)
+    app = web.Application()
+    app.add_routes(routes)
+
+    class RemoteRequest:
+        remote = "8.8.8.8"
+        match_info = {"prompt_id": "prompt-9"}
+
+    blocked = asyncio.run(api.prompt(RemoteRequest()))
+    assert blocked.status == 403
+    assert json.loads(blocked.text)["error"]["code"] == "FORBIDDEN"
+    assert json.loads(blocked.text)["error"]["message"] == (
+        "Prompt status is accepted from loopback and private LAN addresses only."
+    )
+
+    class LanRequest:
+        remote = "192.168.1.13"
+        match_info = {"prompt_id": "prompt-9"}
+
+    lan = asyncio.run(api.prompt(LanRequest()))
+    assert lan.status == 200
+    assert json.loads(lan.text)["result"]["status"] == "completed"
+
+    async def exercise():
+        async with TestClient(TestServer(app)) as client:
+            response = await client.get("/openbio-comfy-mcp/prompt/prompt-9")
+            assert response.status == 200
+            body = await response.json()
+            assert body["ok"] is True
+            assert body["result"]["status"] == "completed"
+            assert body["result"]["outputs"][0]["filename"] == "out.png"
+            assert body["result"]["outputs"][0]["path"] == str((output / "out.png").resolve())
+
+    asyncio.run(exercise())

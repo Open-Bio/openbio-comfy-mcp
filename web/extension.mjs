@@ -93,7 +93,7 @@ export function createLiveCanvasWebExtension({
   async function handleCommand(event) {
     const message = event.detail;
     try {
-      const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId });
+      const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId, api });
       if (message.page_id !== pageId) {
         throw new CanvasBridgeError("page_mismatch", "The command targets a different ComfyUI page");
       }
@@ -117,6 +117,11 @@ export function createLiveCanvasWebExtension({
         });
       } else if (message.command === "present_canvas") {
         result = await liveCanvas.presentCanvas({
+          ...message.arguments,
+          canvas_id: message.canvas_id,
+        });
+      } else if (message.command === "queue_canvas") {
+        result = await liveCanvas.queueCanvas({
           ...message.arguments,
           canvas_id: message.canvas_id,
         });

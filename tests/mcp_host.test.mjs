@@ -76,12 +76,22 @@ test("stdio client can initialize, list tools, and inspect the live canvas", asy
   await client.connect(transport);
   assert.match(
     client.getInstructions(),
-    /without refs for a compact live topology.*native node or group refs.*never queues or executes/s,
+    /without refs for a compact live topology.*native node or group refs.*queue_canvas.*never saves/s,
   );
   const listed = await client.listTools();
   assert.deepEqual(
     listed.tools.map(({ name }) => name),
-    ["list_instances", "inspect_canvas", "present_canvas", "search_nodes", "inspect_node_type", "apply_canvas_patch"],
+    [
+      "list_instances",
+      "inspect_canvas",
+      "present_canvas",
+      "search_nodes",
+      "inspect_node_type",
+      "apply_canvas_patch",
+      "queue_canvas",
+      "inspect_prompt",
+      "wait_for_prompt",
+    ],
   );
   const listInstancesTool = listed.tools.find(({ name }) => name === "list_instances");
   assert.deepEqual(listInstancesTool.inputSchema, {
@@ -311,6 +321,83 @@ test("apply_canvas_patch sends one ordered patch to the selected live canvas", a
       operations,
     },
   });
+});
+
+test("queue_canvas sends the live-canvas queue command and returns prompt_id", async (t) => {
+  let received;
+  const comfy = await startFakeComfy(async (request, response) => {
+    received = await readJson(request);
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      ok: true,
+      result: {
+        canvas_id: "canvas-7",
+        revision: "rev-4",
+        prompt_id: "prompt-9",
+        number: 2,
+      },
+    }));
+  });
+  t.after(() => comfy.close());
+  const client = await connectInMemory(t, comfy.url);
+
+  const result = await client.callTool({
+    name: "queue_canvas",
+    arguments: { canvas_id: "canvas-7", base_revision: "rev-4", batch_count: 1 },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.deepEqual(result.structuredContent, {
+    instance_id: "configured",
+    canvas_id: "canvas-7",
+    revision: "rev-4",
+    prompt_id: "prompt-9",
+    number: 2,
+  });
+  assert.deepEqual(received, {
+    canvas_id: "canvas-7",
+    command: "queue_canvas",
+    arguments: {
+      canvas_id: "canvas-7",
+      base_revision: "rev-4",
+      batch_count: 1,
+    },
+  });
+});
+
+test("inspect_prompt maps output paths and view URLs from the prompt status route", async (t) => {
+  const requests = [];
+  const comfy = await startFakeComfy(async (request, response) => {
+    requests.push({ method: request.method, url: request.url });
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      ok: true,
+      result: {
+        prompt_id: "prompt-9",
+        status: "completed",
+        outputs: [{
+          node_id: "9",
+          filename: "ComfyUI_00001_.png",
+          subfolder: "",
+          type: "output",
+          path: "C:\\\\ComfyUI\\\\output\\\\ComfyUI_00001_.png",
+        }],
+      },
+    }));
+  });
+  t.after(() => comfy.close());
+  const client = await connectInMemory(t, comfy.url);
+
+  const result = await client.callTool({
+    name: "inspect_prompt",
+    arguments: { canvas_id: "canvas-7", prompt_id: "prompt-9" },
+  });
+
+  assert.equal(result.isError, undefined);
+  assert.equal(result.structuredContent.status, "completed");
+  assert.equal(result.structuredContent.outputs[0].filename, "ComfyUI_00001_.png");
+  assert.match(result.structuredContent.outputs[0].view_url, /\/view\?filename=ComfyUI_00001_\.png/);
+  assert.deepEqual(requests, [{ method: "GET", url: "/openbio-comfy-mcp/prompt/prompt-9" }]);
 });
 
 test("relay errors keep their code and details in the MCP tool result", async (t) => {

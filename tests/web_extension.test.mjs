@@ -497,3 +497,42 @@ test("a queued present_canvas starts after the preceding patch transaction close
   assert.equal(replies.every(({ ok }) => ok), true);
   assert.deepEqual(replies[1].result.selection, [{ kind: "node", id: presentTargetId }]);
 });
+
+test("queue_canvas uses the relay-selected canvas identity and native queuePrompt", async () => {
+  const fixture = createWebFixture();
+  const queued = [];
+  fixture.app.graphToPrompt = async () => ({ output: { "7": {} }, workflow: {} });
+  fixture.api.queuePrompt = async (number, body) => {
+    queued.push([number, body]);
+    return { prompt_id: "prompt-live", number: 3 };
+  };
+  await fixture.extension.setup();
+  fixture.requests.length = 0;
+  const revision = createLiveCanvas(fixture.app, fixture.LiteGraph, { pageId: "page-a" })
+    .inspectCanvas().revision;
+
+  await fixture.customListeners.get(COMMAND_EVENT)({
+    detail: {
+      request_id: "request-queue",
+      page_id: "page-a",
+      workflow_id: "workflow-123",
+      canvas_id: "page-a:workflow-123:canvas-root",
+      command: "queue_canvas",
+      arguments: { base_revision: revision, batch_count: 2 },
+    },
+  });
+
+  assert.equal(queued.length, 2);
+  assert.deepEqual(fixture.requests.at(-1).body, {
+    page_id: "page-a",
+    request_id: "request-queue",
+    ok: true,
+    result: {
+      canvas_id: "page-a:workflow-123:canvas-root",
+      revision,
+      prompt_id: "prompt-live",
+      prompt_ids: ["prompt-live", "prompt-live"],
+      number: 3,
+    },
+  });
+});

@@ -27,7 +27,7 @@ def local_base_url(address: str, port: int, *, tls: bool = False) -> str | None:
         return None
     if host.is_unspecified:
         host = ipaddress.ip_address("::1" if host.version == 6 else "127.0.0.1")
-    if not host.is_loopback:
+    if not (host.is_loopback or host.is_private):
         return None
     hostname = f"[{host}]" if host.version == 6 else str(host)
     return f"{'https' if tls else 'http'}://{hostname}:{port}"
@@ -64,7 +64,7 @@ class InstanceRegistration:
             if address is not None:
                 base_url = local_base_url(address, self._server.port, tls=self._tls)
                 if base_url is None:
-                    logger.info("Local ComfyUI discovery requires a loopback or wildcard listener.")
+                    logger.info("Local ComfyUI discovery requires a loopback, private LAN, or wildcard listener.")
                     return
                 record = {
                     "instance_id": self.instance_id,

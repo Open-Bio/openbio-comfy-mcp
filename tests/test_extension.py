@@ -83,6 +83,7 @@ def test_v3_extension_registers_relay_routes_sends_native_events_and_has_no_node
             ("POST", "/openbio-comfy-mcp/command"),
             ("POST", "/openbio-comfy-mcp/reply"),
             ("GET", "/openbio-comfy-mcp/health"),
+            ("GET", "/openbio-comfy-mcp/prompt/{prompt_id}"),
         }
 
         await server_instance.routes.handlers[

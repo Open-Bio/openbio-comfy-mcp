@@ -7,11 +7,11 @@
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
 [![ComfyUI 0.33.0+](https://img.shields.io/badge/ComfyUI-0.33.0%2B-blue.svg)](https://github.com/Comfy-Org/ComfyUI)
 
-让 Cursor、Codex、Claude 或其他本地 AI **查看并修改你 ComfyUI 里当前打开的工作流画布**。
+让 Cursor、Codex、Claude 或其他本地 AI **查看、修改并排队执行**你 ComfyUI 里当前打开的工作流画布。
 
-它走 ComfyUI 自己的图、选择、分组和撤销，不会帮你排队、执行或保存。
+它走 ComfyUI 自己的图、选择、分组、撤销和 Queue 按钮，不会帮你保存工作流。
 
-这不是 [Comfy 官方 MCP](https://docs.comfy.org/agent-tools/mcp)。官方 Cloud MCP 在云端出图，`comfy-mcp` 跑的是工作流文件。本项目改的是你屏幕上正在打开的那张图。
+这不是 [Comfy 官方 MCP](https://docs.comfy.org/agent-tools/mcp)。官方 Cloud MCP 在云端出图，`comfy-mcp` 跑的是工作流文件。本项目改的是你屏幕上正在打开的那张图，并可以按 Queue 把它跑起来。
 
 ## 可以让 AI 做什么
 
@@ -21,8 +21,9 @@
 - 加一个节点、把这两个连上、挪一下这个组。
 - 搜一下**这台** ComfyUI 里装了哪些节点。
 - 把节点打成原生子图，或再拆开。
+- 把当前画布排队，完成后拿到输出文件路径。
 
-修改会立刻出现在画布上。一次 ComfyUI 撤销会整批还原。
+修改会立刻出现在画布上。一次 ComfyUI 撤销会整批还原。排队走的是和 Queue 按钮相同的路径。
 
 ## 安装
 
@@ -88,10 +89,10 @@ codex mcp get openbio-comfy-mcp --json
 
 | 变量 | 默认值 | 什么时候设 |
 | --- | --- | --- |
-| `OPENBIO_COMFY_URL` | 不设置（自动发现） | 把这次 MCP 连接钉在某一个实例上，例如 `http://127.0.0.1:8189`。 |
+| `OPENBIO_COMFY_URL` | 不设置（自动发现） | 把这次 MCP 连接钉在某一个实例上，例如 `http://127.0.0.1:8189` 或 `http://192.168.1.13:8188`。 |
 | `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | 覆盖共享注册目录。ComfyUI 和 MCP Host 必须用同一个路径。 |
 
-每个要编辑的 ComfyUI 实例都要装这个扩展。各后端会把本机地址写进共享目录。只发现回环地址，不支持远程 ComfyUI。
+每个要编辑的 ComfyUI 实例都要装这个扩展。各后端会把地址写进共享目录。发现范围是回环和私有网段（`192.168.x.x`、`10.x`、`172.16–31.x`），不支持公网地址。ComfyUI 监听 `0.0.0.0` 时仍会登记成 `127.0.0.1`；从另一台机器控制时，把 `OPENBIO_COMFY_URL` 设成那台机器的局域网地址，例如 `http://192.168.1.13:8188`。
 
 多个实例同时在线时，默认选最近获得焦点的页面。需要指定时可以说「改 8189 端口上的工作流」。`list_instances` 会列出 `instance_id`、状态和已连接画布。
 
@@ -105,16 +106,19 @@ codex mcp get openbio-comfy-mcp --json
 | `inspect_node_type` | 只读 | 读取某个 `class_type` 的原生结构。 |
 | `present_canvas` | 仅界面 | 切换图、选中对象、按需适配视口。 |
 | `apply_canvas_patch` | 写入画布 | 原子化执行一批可撤销的图编辑。 |
+| `queue_canvas` | 排队当前画布 | 等同于 Queue 按钮，包括 seed 控件。返回 `prompt_id` 和 `prompt_ids`，不等待、不保存。 |
+| `inspect_prompt` | 只读 | 查看排队任务状态，以及输出文件名、本地路径和查看 URL。失败是 `error`，不是 `completed`。 |
+| `wait_for_prompt` | 只读 | 轮询直到该任务完成、失败或超时。 |
 
-常见流程：先检查 → 需要时搜节点类型 → 发一次补丁 → 不满意就在 ComfyUI 里撤销。
+常见流程：先检查 → 需要时搜节点类型 → 发一次补丁 → `queue_canvas` → `wait_for_prompt` → 图改错了就在 ComfyUI 里撤销。
 
 完整操作集合见 [docs/spec.md](docs/spec.md)。
 
 ## 安全
 
 - MCP 进程的操作系统权限与拉起它的 Host 相同。
-- `apply_canvas_patch` 会改当前打开的工作流。若 Host 会审核写入工具，请打开审核。
-- 服务器不监听端口。画布命令只接受回环请求。这不是 ComfyUI 的登录层；不要把未认证的 ComfyUI 暴露到不可信网络。
+- `apply_canvas_patch` 会改当前打开的工作流。`queue_canvas` 会在你的 GPU 上跑这张图。若 Host 会审核写入工具，请把这两个都打开审核。
+- 服务器不监听端口。画布命令只接受回环和私有网段请求。这不是 ComfyUI 的登录层；不要把未认证的 ComfyUI 暴露到公网。
 - 检查结果可能包含提示词、文件名和控件值。后续如何处理取决于你的 MCP Host 和模型提供方。
 
 ## 故障排查
@@ -123,6 +127,7 @@ codex mcp get openbio-comfy-mcp --json
 - Host 里没有工具：确认 PATH 上有 Node 20+，命令是 `npx -y openbio-comfy-mcp@latest`，然后重启 Host。
 - 健康检查路由不存在：扩展没加载。确认装在 `custom_nodes` 下，重启 ComfyUI，看控制台。
 - `STALE_CANVAS`：重新检查，再发新补丁。
+- `PROMPT_TIMEOUT`：`wait_for_prompt` 结束时任务还在跑。再调 `inspect_prompt`，或再等一次。
 - `AMBIGUOUS_INSTANCE`：多个实例且焦点不明确。先 `list_instances`，再传入 `instance_id` 或 `canvas_id`。
 - `INSTANCE_UNAVAILABLE` / `INSTANCE_NOT_FOUND`：该 ComfyUI 已关掉或刚重启。重新列出并检查。
 - 端口 `5173` 的 Vite 前端：不会加载自定义节点的 JavaScript。请用 ComfyUI 自己提供的前端。

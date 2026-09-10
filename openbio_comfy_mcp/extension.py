@@ -26,7 +26,11 @@ class OpenBioComfyMcpExtension(ComfyExtension):
             prompt_server,
             tls=bool(args.tls_keyfile and args.tls_certfile),
         )
-        self._api = RelayAPI(self._relay, instance_id=self._registration.instance_id)
+        self._api = RelayAPI(
+            self._relay,
+            instance_id=self._registration.instance_id,
+            prompt_queue=getattr(prompt_server, "prompt_queue", None),
+        )
         self._api.register(prompt_server.routes)
         prompt_server.app.cleanup_ctx.append(self._registration.cleanup_ctx)
 

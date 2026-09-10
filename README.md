@@ -7,11 +7,11 @@
 [![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-339933.svg)](https://nodejs.org/)
 [![ComfyUI 0.33.0+](https://img.shields.io/badge/ComfyUI-0.33.0%2B-blue.svg)](https://github.com/Comfy-Org/ComfyUI)
 
-Let Cursor, Codex, Claude, or another local AI **inspect and edit the workflow currently open** on your ComfyUI canvas.
+Let Cursor, Codex, Claude, or another local AI **inspect, edit, and queue** the workflow currently open on your ComfyUI canvas.
 
-It uses ComfyUI's own graph, selection, groups, and undo. It never queues, runs, or saves a workflow for you.
+It uses ComfyUI's own graph, selection, groups, undo, and Queue button. It never saves a workflow for you.
 
-This is **not** [Comfy's official MCP](https://docs.comfy.org/agent-tools/mcp). Official Comfy MCP generates images on Comfy Cloud or runs workflow files through `comfy-mcp`. This project edits the live graph you already have open.
+This is **not** [Comfy's official MCP](https://docs.comfy.org/agent-tools/mcp). Official Comfy MCP generates images on Comfy Cloud or runs workflow files through `comfy-mcp`. This project edits and queues the live graph you already have open.
 
 ## What you can ask
 
@@ -21,8 +21,9 @@ Once both pieces below are installed and a ComfyUI window is open:
 - Add a node, connect these two, or move this group.
 - Search the node types installed in *this* ComfyUI.
 - Pack or unpack a native subgraph.
+- Queue the open canvas and get output file paths when it finishes.
 
-Changes appear on the canvas immediately. One ComfyUI undo reverts a whole patch.
+Changes appear on the canvas immediately. One ComfyUI undo reverts a whole patch. Queue uses the same path as the Queue button.
 
 ## Install
 
@@ -88,10 +89,10 @@ Local ComfyUI instances are discovered automatically. You only need one MCP regi
 
 | Variable | Default | When to set it |
 | --- | --- | --- |
-| `OPENBIO_COMFY_URL` | Unset (discover locally) | Pin this MCP connection to one instance, for example `http://127.0.0.1:8189`. |
+| `OPENBIO_COMFY_URL` | Unset (discover locally) | Pin this MCP connection to one instance, for example `http://127.0.0.1:8189` or `http://192.168.1.13:8188`. |
 | `OPENBIO_COMFY_REGISTRY_DIR` | `~/.openbio-comfy-mcp/instances` | Override the shared registration directory. ComfyUI and the MCP host must use the same path. |
 
-Install the extension in every ComfyUI instance you want to edit. Each running backend writes its address under the shared directory. Discovery uses loopback only; remote ComfyUI is not supported.
+Install the extension in every ComfyUI instance you want to edit. Each running backend writes its address under the shared directory. Discovery accepts loopback and private LAN addresses (`192.168.x.x`, `10.x`, `172.16–31.x`). Public internet hosts are not supported. ComfyUI listening on `0.0.0.0` still registers as `127.0.0.1`; from another machine set `OPENBIO_COMFY_URL` to that host's LAN URL, for example `http://192.168.1.13:8188`.
 
 With several online instances, tools pick the one whose page was focused last. Say “edit the workflow on port 8189” if you need a specific one. `list_instances` shows `instance_id`, status, and connected canvases.
 
@@ -105,16 +106,19 @@ With several online instances, tools pick the one whose page was focused last. S
 | `inspect_node_type` | Read-only | Read the native schema of one `class_type`. |
 | `present_canvas` | UI only | Navigate graphs, select items, optionally fit the view. |
 | `apply_canvas_patch` | Writes the canvas | Apply one atomic, undoable batch of graph edits. |
+| `queue_canvas` | Queues the live canvas | Same as the Queue button, including seed widgets. Returns `prompt_id` and `prompt_ids`; does not wait or save. |
+| `inspect_prompt` | Read-only | Status of a queued prompt, plus output filenames, local paths, and view URLs. Failed runs are `error`, not `completed`. |
+| `wait_for_prompt` | Read-only | Poll until that prompt finishes, fails, or the timeout elapses. |
 
-Typical flow: inspect → search a node type if needed → apply one patch → undo in ComfyUI if the result is wrong.
+Typical flow: inspect → search a node type if needed → apply one patch → `queue_canvas` → `wait_for_prompt` → undo in ComfyUI if the graph edit was wrong.
 
 Exact operations live in [docs/spec.md](docs/spec.md).
 
 ## Security
 
 - The MCP process runs with the same OS permissions as the host that launched it.
-- `apply_canvas_patch` can change the open workflow. Review it in your host if you gate write tools.
-- The server opens no listening port. Canvas commands are accepted from loopback only. That is not a general ComfyUI login; do not expose an unauthenticated ComfyUI to untrusted networks.
+- `apply_canvas_patch` can change the open workflow. `queue_canvas` runs that workflow on your GPU. Review both in your host if you gate write tools.
+- The server opens no listening port. Canvas commands are accepted from loopback and private LAN addresses only. That is not a general ComfyUI login; do not expose an unauthenticated ComfyUI to the public internet.
 - Inspections can include prompts, filenames, and widget values. What happens next follows your MCP host and model provider.
 
 ## Troubleshooting
@@ -123,6 +127,7 @@ Exact operations live in [docs/spec.md](docs/spec.md).
 - Host shows no tools: confirm Node 20+ is on `PATH`, that the host command is `npx -y openbio-comfy-mcp@latest`, then restart the host.
 - Health route missing: the extension is not loaded. Reinstall under `custom_nodes`, restart ComfyUI, check its console.
 - `STALE_CANVAS`: inspect again and send a new patch.
+- `PROMPT_TIMEOUT`: the queued prompt was still running when `wait_for_prompt` stopped. Call `inspect_prompt` or wait again.
 - `AMBIGUOUS_INSTANCE`: several instances, no clear focus. Use `list_instances` and pass an `instance_id` or `canvas_id`.
 - `INSTANCE_UNAVAILABLE` / `INSTANCE_NOT_FOUND`: that ComfyUI is down or was restarted. List and inspect again.
 - Port `5173` Vite frontend: custom-node JavaScript does not load there. Use the frontend served by ComfyUI.

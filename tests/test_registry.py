@@ -6,12 +6,13 @@ import types
 from openbio_comfy_mcp import registry
 
 
-def test_local_base_url_only_advertises_loopback_and_preserves_tls():
+def test_local_base_url_advertises_loopback_and_private_lan_and_preserves_tls():
     assert registry.local_base_url("127.0.0.1", 8189) == "http://127.0.0.1:8189"
     assert registry.local_base_url("0.0.0.0", 8190) == "http://127.0.0.1:8190"
     assert registry.local_base_url("::", 8191) == "http://[::1]:8191"
     assert registry.local_base_url("::1", 8192, tls=True) == "https://[::1]:8192"
-    assert registry.local_base_url("192.0.2.10", 8188) is None
+    assert registry.local_base_url("192.168.1.13", 8188) == "http://192.168.1.13:8188"
+    assert registry.local_base_url("8.8.8.8", 8188) is None
 
 
 def test_registry_waits_for_listener_refreshes_and_cleans_only_its_own_record(

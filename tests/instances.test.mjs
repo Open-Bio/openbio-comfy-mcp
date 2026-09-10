@@ -408,3 +408,17 @@ test("fallback and configured canvas handles retain process identity when regist
   }
   assert.equal(commands.filter(({ command }) => command === "apply_canvas_patch").length, 3);
 });
+
+test("discovery keeps private LAN registrations and ignores public hosts", async (t) => {
+  const directory = await registry(t);
+  await register(directory, { instance_id: "lan", url: "http://192.168.1.13:8188" });
+  await register(directory, { instance_id: "remote", url: "https://example.com:8188" });
+  const client = await connect(t, directory);
+
+  const listed = await call(client, "list_instances");
+  const instances = listed.structuredContent.instances;
+  assert.deepEqual(
+    instances.map(({ instance_id, status, base_url }) => ({ instance_id, status, base_url })),
+    [{ instance_id: "lan", status: "unavailable", base_url: "http://192.168.1.13:8188" }],
+  );
+});

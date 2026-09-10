@@ -11,8 +11,8 @@ Expose the ComfyUI workflow currently open in a user's browser or Desktop window
 - The ComfyUI extension registers no execution nodes.
 - The page extension is the only component that reads or mutates the live LiteGraph graph.
 - The MCP host is a separate stdio process and does not keep an authoritative workflow copy.
-- Instance discovery and transport are local only; remote servers and port scanning are outside scope.
-- No tool queues, executes, or saves a workflow automatically.
+- Instance discovery and transport are loopback and private LAN only; public internet hosts and port scanning are outside scope.
+- No tool saves a workflow automatically. `queue_canvas` is an explicit Queue-button equivalent; it does not wait for execution and does not reconstruct a second workflow JSON.
 - No arbitrary JavaScript, DOM automation, shell, or second canvas is exposed.
 
 ## Public MCP interface
@@ -94,11 +94,23 @@ Port `direction` is `"input"` or `"output"`; `name` and `type` are non-empty str
 
 `convert_to_subgraph` and `unpack_subgraph` must be the final operation of their patch. Earlier operations may prepare nodes and links, including nodes referenced through `temp_ref`. Native conversion remaps node IDs, so inspect again before using internal or unpacked node refs. Each successful patch remains one native undo transaction, including edits within nested subgraphs; undo and rollback cover the workflow root and its definitions.
 
+### `queue_canvas`
+
+Accepts a canvas identity bound to its backend, an optional `base_revision` from `inspect_canvas`, and an optional `batch_count` (default 1). The page runs each node's `widget.beforeQueued` callbacks, then calls ComfyUI's native Queue path (`graphToPrompt` plus `api.queuePrompt`) once per batch item. It returns immediately with `prompt_id` (the last queued id), `prompt_ids` in queue order, `number` when provided, `canvas_id`, and the current `revision`. It does not wait for execution, save the workflow, or POST a reconstructed graph that bypasses the live canvas. If `base_revision` is set and stale, the call returns `stale_revision` and queues nothing. Graph validation errors from native queue surface as `queue_rejected`. Missing `graphToPrompt` or `api.queuePrompt` returns `queue_unavailable`.
+
+### `inspect_prompt`
+
+Accepts `prompt_id` and the same `instance_id` / `canvas_id` backend selection as `search_nodes`. The MCP host reads a loopback prompt-status route that wraps ComfyUI's `/queue` and `/history` plus `folder_paths`. Status is `queued`, `running`, `completed`, `error`, or `not_found`. History records with `status.status_str` of `error` are `error`, not `completed`. An error includes a compact `error` object (`node_id`, `node_type`, `exception_message`, `exception_type`, and `interrupted` when ComfyUI reported an interrupt) without traceback or input dumps. Finished prompts include output `filename`, `subfolder`, `type`, absolute `path` when it stays inside the ComfyUI directory for that type, and a `view_url` built from the instance base URL. The live page does not need to stay focused after enqueue.
+
+### `wait_for_prompt`
+
+Polls `inspect_prompt` until `completed` or `error`, or until `timeout_seconds` elapses (default 120, cap 600). It does not hold the 10-second page relay. A prompt that never appears remains `not_found` after timeout; a prompt still `queued` or `running` returns `PROMPT_TIMEOUT`.
+
 ## Session and transport behavior
 
-- Each ComfyUI backend registers its loopback base URL and a fresh `instance_id` for that server lifetime under `~/.openbio-comfy-mcp/instances`. The directory can be overridden with `OPENBIO_COMFY_REGISTRY_DIR`; ComfyUI and the MCP host must use the same directory, which they share by default under the same operating-system user.
+- Each ComfyUI backend registers its loopback or private LAN base URL and a fresh `instance_id` for that server lifetime under `~/.openbio-comfy-mcp/instances`. The directory can be overridden with `OPENBIO_COMFY_REGISTRY_DIR`; ComfyUI and the MCP host must use the same directory, which they share by default under the same operating-system user. Wildcard listeners (`0.0.0.0`) still advertise `127.0.0.1`; pin `OPENBIO_COMFY_URL` to the LAN address when the MCP host is on another machine.
 - Registration is refreshed every 5 seconds, removed on normal shutdown, and ignored after 30 seconds without an update. The MCP host checks health and verifies the registered identity before using an instance, including when a port has been reused by another process.
-- With `OPENBIO_COMFY_URL` unset, the host discovers registered instances. With no current registration records, it tries `http://127.0.0.1:8188` for compatibility with older extensions. Setting `OPENBIO_COMFY_URL` explicitly restricts the connection to that local server and disables discovery.
+- With `OPENBIO_COMFY_URL` unset, the host discovers registered instances. With no current registration records, it tries `http://127.0.0.1:8188` for compatibility with older extensions. Setting `OPENBIO_COMFY_URL` explicitly restricts the connection to that loopback or private LAN server and disables discovery.
 - Public `canvas_id` values bind the native canvas to a specific running backend and remain usable after reconnecting the MCP host with the same discovery configuration. Routing restores the native canvas identity before delivery to the page; native node/group refs and revision behavior remain unchanged. This binding applies to automatic discovery and, with the current extension, explicit URLs and the legacy default address. Older extensions without instance identity retain their previous canvas identity behavior.
 - An unavailable or restarted target returns `INSTANCE_UNAVAILABLE` or `INSTANCE_NOT_FOUND` and never causes automatic switching to another instance. Even if the browser page survives a backend restart, an old canvas identity cannot target the new process; list and inspect the new instance to continue. Conflicting instance and canvas identities return `INSTANCE_MISMATCH`.
 - A page registers its ComfyUI WebSocket client ID and an ephemeral page ID with the plugin relay.
@@ -106,7 +118,7 @@ Port `direction` is `"input"` or `"output"`; `name` and `type` are non-empty str
 - Within the selected instance, one connected page is targeted automatically.
 - With multiple connected pages in the selected instance, the most recently focused page remains the default after focus leaves ComfyUI; if no page has established a default, unresolved ambiguity is reported instead of guessed. Focus chooses a backend only when no explicit instance or canvas identity is supplied; existing canvas bindings remain unchanged.
 - The plugin uses ComfyUI's existing HTTP/WebSocket server for relay traffic. The stdio MCP host opens no listening port.
-- Canvas-writing relay endpoints accept loopback requests only.
+- Canvas-writing relay endpoints and prompt-status reads accept loopback and private LAN requests only. Public internet callers are rejected.
 - Malformed session, command, and reply envelopes return `INVALID_REQUEST` before changing relay state.
 - A disconnected page produces `NO_LIVE_CANVAS`; the system never falls back to editing a workflow file.
 
@@ -114,5 +126,5 @@ Port `direction` is `"input"` or `"output"`; `name` and `type` are non-empty str
 
 1. MCP protocol: initialize, list tools, and call each public tool through stdio, including discovery, instance ambiguity, canvas-bound routing, and target availability.
 2. Relay API: instance registration and cleanup, page registration, target selection, command correlation, result delivery, timeout, and disconnect behavior.
-3. Live canvas: inspect, present, and apply through the public command handler, including native Group selection and editing, one native transaction, unchanged existing-node colors, added-node native rendering, stale rejection, and rollback.
+3. Live canvas: inspect, present, apply, and queue through the public command handler, including native Group selection and editing, one native transaction, unchanged existing-node colors, added-node native rendering, stale rejection, rollback, and native queuePrompt returning prompt_id without waiting.
 4. Installation: Junction discovery, Codex MCP configuration, real browser connection, visible native graph mutation, and one-step native undo.

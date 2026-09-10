@@ -1216,3 +1216,95 @@ test("switching from the root to its subgraph does not reconfigure the root", as
   assert.equal(app.canvas.graph, subgraph);
   assert.deepEqual(graph.getNodeById(7).pos, [60, 100]);
 });
+
+test("queue_canvas runs beforeQueued then graphToPrompt and returns every prompt_id", async () => {
+  const { app, existing, LiteGraph } = createCanvasFixture();
+  const order = [];
+  existing.widgets[0].beforeQueued = ({ isPartialExecution } = {}) => {
+    order.push(["beforeQueued", isPartialExecution]);
+    existing.widgets[0].value = `seed-${order.filter(([name]) => name === "beforeQueued").length}`;
+  };
+  app.graphToPrompt = async () => {
+    order.push(["graphToPrompt", existing.widgets[0].value]);
+    return { output: { "7": {} }, workflow: {} };
+  };
+  const api = {
+    async queuePrompt(number, body) {
+      order.push(["queuePrompt", number, body.output]);
+      return {
+        prompt_id: `prompt-${order.filter(([name]) => name === "queuePrompt").length}`,
+        number: order.filter(([name]) => name === "queuePrompt").length,
+      };
+    },
+  };
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a", api });
+  const inspected = liveCanvas.inspectCanvas();
+
+  const queued = await liveCanvas.queueCanvas({
+    canvas_id: inspected.canvas_id,
+    base_revision: inspected.revision,
+    batch_count: 2,
+  });
+
+  assert.deepEqual(order, [
+    ["beforeQueued", false],
+    ["graphToPrompt", "seed-1"],
+    ["queuePrompt", 0, { "7": {} }],
+    ["beforeQueued", false],
+    ["graphToPrompt", "seed-2"],
+    ["queuePrompt", 0, { "7": {} }],
+  ]);
+  assert.deepEqual(queued, {
+    canvas_id: inspected.canvas_id,
+    revision: inspected.revision,
+    prompt_id: "prompt-2",
+    prompt_ids: ["prompt-1", "prompt-2"],
+    number: 2,
+  });
+});
+
+test("queue_canvas is unavailable when the page only has app.queuePrompt", async () => {
+  const { app, LiteGraph } = createCanvasFixture();
+  app.queuePrompt = async () => true;
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+
+  await assert.rejects(
+    () => liveCanvas.queueCanvas({ canvas_id: liveCanvas.inspectCanvas().canvas_id }),
+    (error) => error.code === "queue_unavailable",
+  );
+});
+
+test("queue_canvas prefers graphToPrompt plus api.queuePrompt and rejects node errors", async () => {
+  const { app, LiteGraph } = createCanvasFixture();
+  const prompt = { output: { "7": {} }, workflow: {} };
+  app.graphToPrompt = async () => prompt;
+  const api = {
+    async queuePrompt(number, body) {
+      assert.equal(number, 0);
+      assert.equal(body, prompt);
+      return { prompt_id: "prompt-2", node_errors: { "7": { errors: ["bad"] } } };
+    },
+  };
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a", api });
+
+  await assert.rejects(
+    () => liveCanvas.queueCanvas({ canvas_id: liveCanvas.inspectCanvas().canvas_id }),
+    (error) => error.code === "queue_rejected" && error.details.node_errors["7"] !== undefined,
+  );
+});
+
+test("queue_canvas rejects a stale revision and an invalid batch_count", async () => {
+  const { app, LiteGraph } = createCanvasFixture();
+  app.queuePrompt = async () => ({ prompt_id: "prompt-1" });
+  const liveCanvas = createLiveCanvas(app, LiteGraph, { pageId: "page-a" });
+  const inspected = liveCanvas.inspectCanvas();
+
+  await assert.rejects(
+    () => liveCanvas.queueCanvas({ canvas_id: inspected.canvas_id, base_revision: "v1-stale" }),
+    (error) => error.code === "stale_revision",
+  );
+  await assert.rejects(
+    () => liveCanvas.queueCanvas({ canvas_id: inspected.canvas_id, batch_count: 0 }),
+    (error) => error.code === "invalid_queue",
+  );
+});

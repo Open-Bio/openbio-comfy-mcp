@@ -28,13 +28,35 @@ function canvasRoute(canvasId) {
   }
 }
 
+function isLocalHostname(hostname) {
+  const host = hostname.startsWith("[") && hostname.endsWith("]")
+    ? hostname.slice(1, -1)
+    : hostname;
+  if (host === "localhost") return true;
+  const version = isIP(host);
+  if (version === 4) {
+    const [a, b] = host.split(".").map(Number);
+    return a === 127 || a === 10
+      || (a === 192 && b === 168)
+      || (a === 172 && b >= 16 && b <= 31)
+      || (a === 169 && b === 254);
+  }
+  if (version === 6) {
+    const ip = host.toLowerCase();
+    if (ip === "::1") return true;
+    const mapped = ip.startsWith("::ffff:") ? ip.slice(7) : "";
+    if (mapped && isIP(mapped) === 4) return isLocalHostname(mapped);
+    return ip.startsWith("fc") || ip.startsWith("fd") || ip.startsWith("fe80:");
+  }
+  return false;
+}
+
 function isLocalUrl(value) {
   try {
     const url = new URL(value);
     return ["http:", "https:"].includes(url.protocol)
       && !url.username && !url.password && !url.search && !url.hash
-      && (url.hostname === "localhost" || url.hostname === "[::1]"
-        || (isIP(url.hostname) === 4 && url.hostname.startsWith("127.")));
+      && isLocalHostname(url.hostname);
   } catch {
     return false;
   }
